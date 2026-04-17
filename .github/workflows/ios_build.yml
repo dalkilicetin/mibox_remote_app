@@ -1,0 +1,37 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build unsigned IPA
+        run: |
+          flutter build ios --release --no-codesign
+          mkdir -p build/Payload
+          cp -r build/ios/iphoneos/Runner.app build/Payload/
+          cd build && zip -r MiBoxRemote.ipa Payload/
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiBoxRemote-ipa
+          path: build/MiBoxRemote.ipa
+          retention-days: 7
