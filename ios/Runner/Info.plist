@@ -31,8 +31,6 @@
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>
@@ -45,5 +43,11 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSMotionUsageDescription</key>
+	<string>Air Mouse ozelligi icin hareket sensoru gereklidir</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Compass (yaw) sensoru icin konum izni gereklidir</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Compass (yaw) sensoru icin konum izni gereklidir</string>
 </dict>
 </plist>
