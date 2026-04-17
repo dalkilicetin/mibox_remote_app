@@ -5,10 +5,12 @@ import 'package:flutter/services.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import '../services/mibox_service.dart';
+import '../services/atv_remote_service.dart';
 
 class AirMouseScreen extends StatefulWidget {
   final MiBoxService service;
-  const AirMouseScreen({super.key, required this.service});
+  final AtvRemoteService atv;
+  const AirMouseScreen({super.key, required this.service, required this.atv});
 
   @override
   State<AirMouseScreen> createState() => _AirMouseScreenState();
@@ -194,7 +196,11 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
   }
 
   void _sendKey(int code) {
-    widget.service.sendKey(code);
+    if (widget.atv.isConnected) {
+      widget.atv.sendKey(code);
+    } else {
+      widget.service.sendKey(code);
+    }
     HapticFeedback.lightImpact();
   }
 

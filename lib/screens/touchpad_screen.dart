@@ -2,10 +2,12 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/mibox_service.dart';
+import '../services/atv_remote_service.dart';
 
 class TouchpadScreen extends StatefulWidget {
   final MiBoxService service;
-  const TouchpadScreen({super.key, required this.service});
+  final AtvRemoteService atv;
+  const TouchpadScreen({super.key, required this.service, required this.atv});
 
   @override
   State<TouchpadScreen> createState() => _TouchpadScreenState();
@@ -31,7 +33,11 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
   bool _kbdVisible = false;
 
   void _sendKey(int keyCode) {
-    widget.service.sendKey(keyCode);
+    if (widget.atv.isConnected) {
+      widget.atv.sendKey(keyCode);
+    } else {
+      widget.service.sendKey(keyCode);
+    }
     HapticFeedback.lightImpact();
   }
 

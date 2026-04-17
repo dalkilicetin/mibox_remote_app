@@ -128,8 +128,8 @@ class _RemoteScreenState extends State<RemoteScreen>
         controller: _tabController,
         physics: const NeverScrollableScrollPhysics(),
         children: [
-          AirMouseScreen(service: widget.service),
-          TouchpadScreen(service: widget.service),
+          AirMouseScreen(service: widget.service, atv: _atv),
+          TouchpadScreen(service: widget.service, atv: _atv),
         ],
       ),
     );
