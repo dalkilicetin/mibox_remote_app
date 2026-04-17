@@ -1,6 +1,6 @@
-# mibox_remote
+# mibox_remote_forIOS_ANDROID
 
-A new Flutter project.
+A new Flutter project to build app for phones.
 
 ## Getting Started
 
