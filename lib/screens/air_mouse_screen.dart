@@ -3,7 +3,6 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:sensors_plus/sensors_plus.dart';
-import 'package:flutter_compass/flutter_compass.dart';
 import '../services/mibox_service.dart';
 import '../services/atv_remote_service.dart';
 
@@ -18,7 +17,6 @@ class AirMouseScreen extends StatefulWidget {
 
 class _AirMouseScreenState extends State<AirMouseScreen> {
   StreamSubscription? _accelSub;
-  StreamSubscription? _compassSub;
 
   bool _airOn = false;
   String _debugText = 'Hazir';
@@ -88,12 +86,7 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
     });
 
     // YAW: compass'tan alpha (0-360 derece, web appteki alpha gibi)
-    _compassSub = FlutterCompass.events?.listen((event) {
-      if (event.heading != null) {
-        // compass 0-360 veriyor, web appteki alpha gibi
-        _rawAlpha = (event.heading! + 360) % 360;
-      }
-    });
+    
   }
 
   // Web app'teki onGyro fonksiyonu ile BIREBIR AYNI mantik
@@ -207,7 +200,6 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
   @override
   void dispose() {
     _accelSub?.cancel();
-    _compassSub?.cancel();
     _toggleTimer?.cancel();
     _kbdCtrl.dispose();
     super.dispose();
