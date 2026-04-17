@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../services/mibox_service.dart';
+import '../services/atv_remote_service.dart';
 import 'air_mouse_screen.dart';
 import 'touchpad_screen.dart';
 
@@ -16,22 +18,46 @@ class _RemoteScreenState extends State<RemoteScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
   bool _connected = true;
+  final AtvRemoteService _atv = AtvRemoteService();
+  bool _atvConnected = false;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
 
-    // Bağlantı takibi
     widget.service.connectionStream.listen((connected) {
       if (mounted) setState(() => _connected = connected);
     });
+
+    _atv.connectionStream.listen((connected) {
+      if (mounted) setState(() => _atvConnected = connected);
+    });
+
+    _initAtv();
+  }
+
+  Future<void> _initAtv() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cert = prefs.getString('mibox_cert') ?? '';
+      final key = prefs.getString('mibox_key') ?? '';
+      if (cert.isNotEmpty && key.isNotEmpty) {
+        _atv.setCertificates(cert, key);
+        await _atv.connect(widget.ip);
+      } else {
+        print('[ATV] Sertifika yok - pairing gerekli');
+      }
+    } catch (e) {
+      print('[ATV] Init error: $e');
+    }
   }
 
   @override
   void dispose() {
     _tabController.dispose();
     widget.service.dispose();
+    _atv.dispose();
     super.dispose();
   }
 
@@ -44,7 +70,6 @@ class _RemoteScreenState extends State<RemoteScreen>
         child: SafeArea(
           child: Column(
             children: [
-              // Status bar
               Container(
                 color: const Color(0xFF12122a),
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -57,10 +82,24 @@ class _RemoteScreenState extends State<RemoteScreen>
                     ),
                     const SizedBox(width: 6),
                     Text(
-                      _connected ? '✓ ${widget.ip}' : '✗ Bağlantı kesildi',
+                      _connected ? widget.ip : 'Baglanti kesildi',
                       style: TextStyle(
                         color: _connected ? const Color(0xFF4ade80) : Colors.red,
                         fontSize: 12,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Icon(
+                      Icons.tv,
+                      color: _atvConnected ? const Color(0xFF4ade80) : Colors.grey,
+                      size: 14,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      _atvConnected ? 'TV Remote' : 'TV Yok',
+                      style: TextStyle(
+                        color: _atvConnected ? const Color(0xFF4ade80) : Colors.grey,
+                        fontSize: 11,
                       ),
                     ),
                     const Spacer(),
@@ -71,16 +110,14 @@ class _RemoteScreenState extends State<RemoteScreen>
                   ],
                 ),
               ),
-
-              // Tab bar
               TabBar(
                 controller: _tabController,
                 indicatorColor: const Color(0xFFe94560),
                 labelColor: const Color(0xFFe94560),
                 unselectedLabelColor: Colors.grey,
                 tabs: const [
-                  Tab(text: '🌀 Air Mouse'),
-                  Tab(text: '☝️ Touchpad'),
+                  Tab(text: 'Air Mouse'),
+                  Tab(text: 'Touchpad'),
                 ],
               ),
             ],
@@ -91,8 +128,8 @@ class _RemoteScreenState extends State<RemoteScreen>
         controller: _tabController,
         physics: const NeverScrollableScrollPhysics(),
         children: [
-          AirMouseScreen(service: widget.service),
-          TouchpadScreen(service: widget.service),
+          AirMouseScreen(service: widget.service, atv: _atv),
+          TouchpadScreen(service: widget.service, atv: _atv),
         ],
       ),
     );
