@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:sensors_plus/sensors_plus.dart';
+import 'package:flutter_compass/flutter_compass.dart';
 import '../services/mibox_service.dart';
 
 class AirMouseScreen extends StatefulWidget {
@@ -14,26 +15,37 @@ class AirMouseScreen extends StatefulWidget {
 }
 
 class _AirMouseScreenState extends State<AirMouseScreen> {
-  StreamSubscription? _orientationSub;
+  StreamSubscription? _accelSub;
+  StreamSubscription? _compassSub;
+
   bool _airOn = false;
   String _debugText = 'Hazir';
 
-  // Beta low-pass filter
-  double _fbeta = 0;
-  bool _filterInit = false;
+  // Web app ile birebir ayni degiskenler
+  // LP = 0.5 (web appteki gibi)
   static const double LP = 0.5;
 
-  // Alpha delta filtering (yaw)
+  // beta (pitch) low-pass filter
+  double _fbeta = 0;
+  bool _filterInit = false;
+
+  // alpha (yaw) - delta filtering
   double _lastRawAlpha = 0;
   double _filteredDa = 0;
   bool _lastAlphaInit = false;
+
+  // Son degerler
   double _lastBeta = 0;
   DateTime _lastTime = DateTime.now();
 
-  // Hassasiyet
+  // Anlık ham degerler (sensor'dan geliyor)
+  double _rawAlpha = 0; // compass'tan (0-360)
+  double _rawBeta = 0;  // accelerometer'dan
+
+  // Hassasiyet (web appteki sens slider gibi)
   double _sensitivity = 25;
 
-  // Tap butonu
+  // Tap butonu - web appteki gibi
   double _tapStartX = 0, _tapStartY = 0;
   double _tapLastX = 0, _tapLastY = 0;
   DateTime _tapStartTime = DateTime.now();
@@ -60,17 +72,31 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
   }
 
   void _startSensors() {
-    // AbsoluteOrientation: yaw/pitch/roll (radyan)
-    _orientationSub = absoluteOrientationEventStream().listen((event) {
-      // yaw = sola/saga donme (alpha) rad
-      // pitch = one/arkaya egim (beta) rad
-      final rawA = event.yaw * 180 / math.pi;
-      final rawB = event.pitch * 180 / math.pi;
-      _onOrientation(rawA, rawB);
+    // PITCH: accelerometer'dan beta hesapla
+    // web appteki e.beta gibi - telefon dik tutulurken ileri/geri egim
+    _accelSub = accelerometerEventStream().listen((event) {
+      // Beta: telefon ne kadar one/arkaya egilmis
+      // atan2(y, sqrt(x^2+z^2)) * 180/pi - beta benzeri
+      final beta = math.atan2(
+        event.y,
+        math.sqrt(event.x * event.x + event.z * event.z)
+      ) * 180 / math.pi;
+      _rawBeta = beta;
+      _onGyro(_rawAlpha, _rawBeta);
+    });
+
+    // YAW: compass'tan alpha (0-360 derece, web appteki alpha gibi)
+    _compassSub = FlutterCompass.events?.listen((event) {
+      if (event.heading != null) {
+        // compass 0-360 veriyor, web appteki alpha gibi
+        _rawAlpha = (event.heading! + 360) % 360;
+      }
     });
   }
 
-  void _onOrientation(double rawA, double rawB) {
+  // Web app'teki onGyro fonksiyonu ile BIREBIR AYNI mantik
+  void _onGyro(double rawA, double rawB) {
+    // Beta icin low-pass filter
     if (!_filterInit) {
       _fbeta = rawB;
       _filterInit = true;
@@ -88,36 +114,47 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
       return;
     }
 
+    // 16ms rate limit (web appteki gibi)
     final now = DateTime.now();
     if (now.difference(_lastTime).inMilliseconds < 16) return;
 
     if (_lastAlphaInit) {
-      // PITCH
+      // PITCH: beta degisimi
       double db = _fbeta - _lastBeta;
       if (db > 90) db -= 180;
       if (db < -90) db += 180;
 
-      // YAW - delta filtering
+      // YAW: delta filtering - circular filtering problemi cozumu
+      // Web appteki gibi: rawDa = lastRawAlpha - rawA (wrap-around fix)
       double rawDa = _lastRawAlpha - rawA;
       if (rawDa > 180) rawDa -= 360;
       if (rawDa < -180) rawDa += 360;
       _filteredDa = LP * rawDa + (1 - LP) * _filteredDa;
       double da = _filteredDa;
 
+      // Deadzone - web appteki gibi
       if (db.abs() < 0.3) db = 0;
       if (da.abs() < 0.05) da = 0;
 
       if (db != 0 || da != 0) {
-        final sens = _sensitivity / 25;
+        // Dinamik hassasiyet - web appteki gibi
+        final sens = _sensitivity;
         final speed = math.sqrt(db * db + da * da);
         final boost = speed > 3 ? 1.0 + (speed - 3) * 0.3 : 1.0;
-        final dx = (da * boost * sens * 25).round();
-        final dy = (db * boost * sens * -25).round();
-        if (dx != 0 || dy != 0) widget.service.moveCursor(dx, dy);
+        final finalDb = db * sens / 25 * boost;
+        final finalDa = da * boost;
+
+        // Piksel hareketi - move komutu gonder
+        final dx = (finalDa * 25).round();
+        final dy = (finalDb * -25).round();
+        if (dx != 0 || dy != 0) {
+          widget.service.moveCursor(dx, dy);
+        }
 
         if (mounted) {
           setState(() => _debugText =
-              'pitch:${db.toStringAsFixed(2)} yaw:${da.toStringAsFixed(2)}${boost > 1 ? ' x${boost.toStringAsFixed(1)}' : ''}');
+              'pitch:${db.toStringAsFixed(2)} yaw:${da.toStringAsFixed(2)}'
+              '${boost > 1 ? ' x${boost.toStringAsFixed(1)}' : ''}');
         }
       }
     }
@@ -130,9 +167,11 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
 
   void _toggleAir() {
     setState(() => _airOn = !_airOn);
+    // Reset - web appteki toggleAir gibi
     _filterInit = false;
     _lastAlphaInit = false;
     _filteredDa = 0;
+
     _toggleTimer?.cancel();
     _toggleTimer = Timer(const Duration(milliseconds: 300), () {
       if (_airOn) {
@@ -161,7 +200,8 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
 
   @override
   void dispose() {
-    _orientationSub?.cancel();
+    _accelSub?.cancel();
+    _compassSub?.cancel();
     _toggleTimer?.cancel();
     _kbdCtrl.dispose();
     super.dispose();
@@ -190,7 +230,9 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
               borderRadius: BorderRadius.circular(10)),
           child: Text(_debugText,
               style: const TextStyle(
-                  color: Color(0xFF4ade80), fontSize: 11, fontFamily: 'monospace')),
+                  color: Color(0xFF4ade80),
+                  fontSize: 11,
+                  fontFamily: 'monospace')),
         ),
         const SizedBox(height: 8),
 
@@ -202,8 +244,9 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
             child: ElevatedButton(
               onPressed: _toggleAir,
               style: ElevatedButton.styleFrom(
-                backgroundColor:
-                    _airOn ? const Color(0xFFe94560) : const Color(0xFF16213e),
+                backgroundColor: _airOn
+                    ? const Color(0xFFe94560)
+                    : const Color(0xFF16213e),
                 side: const BorderSide(color: Color(0xFFe94560)),
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(20)),
@@ -220,12 +263,13 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
         ),
         const SizedBox(height: 8),
 
-        // TIKLA + scrollbar
+        // TIKLA + swipe scrollbar
         Expanded(
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12),
             child: Row(
               children: [
+                // TIKLA butonu - web appteki gibi
                 Expanded(
                   child: GestureDetector(
                     onPanStart: (d) {
@@ -264,7 +308,7 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
                         if (_airOn) {
                           widget.service.tap();
                         } else {
-                          widget.service.sendKey(23);
+                          widget.service.sendKey(23); // DPAD_CENTER
                         }
                         HapticFeedback.lightImpact();
                       }
@@ -288,7 +332,7 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
                 ),
                 const SizedBox(width: 8),
 
-                // Swipe scrollbar
+                // Swipe scrollbar (browser icin)
                 GestureDetector(
                   onPanStart: (_) => _swipeAccum = 0,
                   onPanUpdate: (d) {
@@ -304,7 +348,8 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
                     decoration: BoxDecoration(
                       color: const Color(0xFF0d1117),
                       borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: const Color(0xFF0f3460), width: 2),
+                      border:
+                          Border.all(color: const Color(0xFF0f3460), width: 2),
                     ),
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -384,7 +429,7 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
         ),
         const SizedBox(height: 8),
 
-        // Hassasiyet
+        // Hassasiyet slider
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12),
           child: Container(
@@ -439,7 +484,8 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
               Icon(icon, color: Colors.white, size: 18),
               const SizedBox(width: 6),
               Text(label,
-                  style: const TextStyle(color: Colors.white, fontSize: 13)),
+                  style:
+                      const TextStyle(color: Colors.white, fontSize: 13)),
             ],
           ),
         ),
@@ -459,8 +505,8 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
             decoration: const BoxDecoration(
               color: Color(0xFF12122a),
               borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-              border:
-                  Border(top: BorderSide(color: Color(0xFF0f3460), width: 2)),
+              border: Border(
+                  top: BorderSide(color: Color(0xFF0f3460), width: 2)),
             ),
             padding: const EdgeInsets.fromLTRB(16, 20, 16, 32),
             child: Column(
@@ -472,7 +518,8 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
                 TextField(
                   controller: _kbdCtrl,
                   autofocus: true,
-                  style: const TextStyle(color: Colors.white, fontSize: 16),
+                  style:
+                      const TextStyle(color: Colors.white, fontSize: 16),
                   decoration: InputDecoration(
                     hintText: 'Yazmak istediginizi girin...',
                     hintStyle: const TextStyle(color: Colors.grey),
@@ -503,18 +550,20 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
                           backgroundColor: const Color(0xFFe94560),
                           shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(14)),
-                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          padding:
+                              const EdgeInsets.symmetric(vertical: 14),
                         ),
                         child: const Text('Gonder',
-                            style:
-                                TextStyle(color: Colors.white, fontSize: 16)),
+                            style: TextStyle(
+                                color: Colors.white, fontSize: 16)),
                       ),
                     ),
                     const SizedBox(width: 8),
                     OutlinedButton(
                       onPressed: () => widget.service.sendKey(67),
                       style: OutlinedButton.styleFrom(
-                        side: const BorderSide(color: Color(0xFF0f3460)),
+                        side: const BorderSide(
+                            color: Color(0xFF0f3460)),
                         shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(14)),
                         padding: const EdgeInsets.symmetric(
@@ -527,7 +576,8 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
                     OutlinedButton(
                       onPressed: () => widget.service.sendKey(66),
                       style: OutlinedButton.styleFrom(
-                        side: const BorderSide(color: Color(0xFF4ade80)),
+                        side: const BorderSide(
+                            color: Color(0xFF4ade80)),
                         shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(14)),
                         padding: const EdgeInsets.symmetric(
@@ -540,8 +590,8 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
                 ),
                 TextButton(
                   onPressed: () => setState(() => _kbdVisible = false),
-                  child:
-                      const Text('Kapat', style: TextStyle(color: Colors.grey)),
+                  child: const Text('Kapat',
+                      style: TextStyle(color: Colors.grey)),
                 ),
               ],
             ),
