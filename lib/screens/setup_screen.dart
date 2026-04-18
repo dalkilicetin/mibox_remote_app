@@ -973,27 +973,6 @@ class _AtvPairingSession {
 
   void dispose() => _socket?.destroy();
 
-
-    lines.add('-----END CERTIFICATE-----');
-    return lines.join('\n');
-  }
-
-
-
-    lines.add('-----END RSA PRIVATE KEY-----');
-    return lines.join('\n');
-  }
- catch (_) { return Uint8List(0); }
-  }
- catch (_) { return Uint8List(0); }
-  }
-
-    return result;
-  }
-
-    return bytes;
-  }
-
   static Uint8List _hexToBytes(String hex) {
     if (hex.length % 2 != 0) hex = '0$hex';
     final bytes = Uint8List(hex.length ~/ 2);
