@@ -766,6 +766,7 @@ class _AtvPairingSession {
 
   // null = başarılı, String = hata mesajı
   Future<String?> connectWithLog(void Function(String) log) async {
+    _log = log;
     try {
       log('TLS bağlantısı kuruluyor → $ip:$pairingPort');
       final context = SecurityContext(withTrustedRoots: false);
@@ -779,8 +780,9 @@ class _AtvPairingSession {
       _setupDataListener();
 
       // 1. pairing_request
-      _sendPairingRequest();
-      log('→ pairing_request gönderildi');
+      final reqBytes = _buildPairingRequestBytes();
+      log('→ pairing_request gönderiliyor: \${reqBytes.length} byte = [\${reqBytes.map((b) => b.toString()).join(",")}]');
+      _sendMessage(reqBytes);
 
       // 2. pairing_request_ack
       try {
@@ -840,27 +842,36 @@ class _AtvPairingSession {
   final _receivedMessages = <List<int>>[];
   final _messageCompleter = <Completer<List<int>>>[];
 
+  void Function(String)? _log;
+
+  // Pairing port (6467) için gelen veri buffer'ı — TCP fragmentation'a karşı
+  final _recvBuffer = <int>[];
+
   void _setupDataListener() {
     _socket!.listen(
       (data) {
-        // 4 byte length prefix + payload
-        var offset = 0;
-        while (offset + 4 <= data.length) {
-          final len = ByteData.sublistView(
-              Uint8List.fromList(data.sublist(offset, offset + 4)))
-              .getUint32(0, Endian.big);
-          if (offset + 4 + len > data.length) break;
-          final msg = data.sublist(offset + 4, offset + 4 + len);
+        // TV'den gelen raw bytes'ı logla
+        _log?.call('← TV raw (${data.length}b): [${data.map((b) => b.toString()).join(',')}]');
+
+        // Port 6467: prefix YOK — her gelen chunk bir mesajdır
+        // TCP fragmentation olabilir, buffer'a ekle
+        _recvBuffer.addAll(data);
+
+        // Tüm buffer'ı tek mesaj olarak teslim et
+        // (ACK'lar genellikle tek chunk'ta geliyor)
+        if (_recvBuffer.isNotEmpty) {
+          final msg = List<int>.from(_recvBuffer);
+          _recvBuffer.clear();
+          _log?.call('  mesaj: ${msg.length} byte = [${msg.map((b) => b.toString()).join(',')}]');
           if (_messageCompleter.isNotEmpty) {
             _messageCompleter.removeAt(0).complete(msg);
           } else {
             _receivedMessages.add(msg);
           }
-          offset += 4 + len;
         }
       },
-      onError: (_) {},
-      onDone: () {},
+      onError: (e) => _log?.call('← TV socket error: $e'),
+      onDone: ()  => _log?.call('← TV socket closed'),
     );
   }
 
@@ -876,22 +887,21 @@ class _AtvPairingSession {
   // Her mesaj önce 4 byte big-endian length, sonra payload
   // Tüm payload byte dizileri dokümantasyondan alınmıştır
 
-  void _sendPairingRequest() {
-    // [8,2] = protocol_version:2, [16,200,1] = status:OK
-    // [82] = field10 LEN (pairing_request), [length], [10,length,service_name_bytes, 18,length,client_name_bytes]
+  Uint8List _buildPairingRequestBytes() {
     final serviceBytes = utf8.encode(_clientName);
     final clientBytes  = utf8.encode(_clientId);
     final innerLen = 2 + serviceBytes.length + 2 + clientBytes.length;
-    final payload = <int>[
+    return Uint8List.fromList([
       8, 2,          // protocol_version = 2
       16, 200, 1,    // status = STATUS_OK
       82,            // field 10 (pairing_request), wire type 2
-      innerLen,      // length of inner message
-      10, serviceBytes.length, ...serviceBytes,  // service_name
-      18, clientBytes.length,  ...clientBytes,   // client_name
-    ];
-    _sendMessage(Uint8List.fromList(payload));
+      innerLen,
+      10, serviceBytes.length, ...serviceBytes,
+      18, clientBytes.length,  ...clientBytes,
+    ]);
   }
+
+  void _sendPairingRequest() => _sendMessage(_buildPairingRequestBytes());
 
   void _sendOptions() {
     // Exact bytes from spec:
@@ -976,11 +986,10 @@ class _AtvPairingSession {
     }
   }
 
+  // Port 6467 (pairing): length prefix YOK — raw protobuf
+  // Port 6466 (remote): 4-byte big-endian length prefix VAR
   void _sendMessage(Uint8List payload) {
     if (_socket == null) return;
-    final lenBytes = ByteData(4);
-    lenBytes.setUint32(0, payload.length, Endian.big);
-    _socket!.add(lenBytes.buffer.asUint8List());
     _socket!.add(payload);
   }
 
