@@ -781,7 +781,7 @@ class _AtvPairingSession {
 
       // 1. pairing_request
       final reqBytes = _buildPairingRequestBytes();
-      log('→ pairing_request gönderiliyor: \${reqBytes.length} byte = [\${reqBytes.map((b) => b.toString()).join(",")}]');
+      log('→ pairing_request gönderiliyor: ${reqBytes.length} byte = [${reqBytes.join(",")}]');
       _sendMessage(reqBytes);
 
       // 2. pairing_request_ack
@@ -847,32 +847,35 @@ class _AtvPairingSession {
   // Pairing port (6467) için gelen veri buffer'ı — TCP fragmentation'a karşı
   final _recvBuffer = <int>[];
 
+  Timer? _flushTimer;
+
   void _setupDataListener() {
     _socket!.listen(
       (data) {
-        // TV'den gelen raw bytes'ı logla
         _log?.call('← TV raw (${data.length}b): [${data.map((b) => b.toString()).join(',')}]');
-
-        // Port 6467: prefix YOK — her gelen chunk bir mesajdır
-        // TCP fragmentation olabilir, buffer'a ekle
         _recvBuffer.addAll(data);
-
-        // Tüm buffer'ı tek mesaj olarak teslim et
-        // (ACK'lar genellikle tek chunk'ta geliyor)
-        if (_recvBuffer.isNotEmpty) {
-          final msg = List<int>.from(_recvBuffer);
-          _recvBuffer.clear();
-          _log?.call('  mesaj: ${msg.length} byte = [${msg.map((b) => b.toString()).join(',')}]');
-          if (_messageCompleter.isNotEmpty) {
-            _messageCompleter.removeAt(0).complete(msg);
-          } else {
-            _receivedMessages.add(msg);
-          }
-        }
+        _flushTimer?.cancel();
+        _flushTimer = Timer(const Duration(milliseconds: 10), _processBuffer);
       },
       onError: (e) => _log?.call('← TV socket error: $e'),
       onDone: ()  => _log?.call('← TV socket closed'),
     );
+  }
+
+  void _processBuffer() {
+    // 1-byte length prefix parse — yeterli veri geldikçe mesaj çıkar
+    while (_recvBuffer.isNotEmpty) {
+      final expectedLen = _recvBuffer[0];
+      if (_recvBuffer.length < 1 + expectedLen) break; // henüz tam gelmedi
+      final msg = _recvBuffer.sublist(1, 1 + expectedLen);
+      _recvBuffer.removeRange(0, 1 + expectedLen);
+      _log?.call('  mesaj: $expectedLen byte = [${msg.join(",")}]');
+      if (_messageCompleter.isNotEmpty) {
+        _messageCompleter.removeAt(0).complete(msg);
+      } else {
+        _receivedMessages.add(msg);
+      }
+    }
   }
 
   Future<List<int>> _readMessage({int timeoutMs = 3000}) async {
@@ -986,11 +989,11 @@ class _AtvPairingSession {
     }
   }
 
-  // Port 6467 (pairing): length prefix YOK — raw protobuf
+  // Port 6467 (pairing): 1-byte length prefix VAR
   // Port 6466 (remote): 4-byte big-endian length prefix VAR
   void _sendMessage(Uint8List payload) {
     if (_socket == null) return;
-    _socket!.add(payload);
+    _socket!.add(Uint8List.fromList([payload.length, ...payload]));
   }
 
   // DER X509'dan RSA public key modulus/exponent extract
