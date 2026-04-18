@@ -758,7 +758,10 @@ class _AtvPairingSession {
   final String ip;
   final int pairingPort;
   final String certPem;
-  final String keyPem;
+  /// PKCS#8 — SecurityContext.usePrivateKeyBytes() için (Flutter/Dart zorunluluğu)
+  final String keyPemPkcs8;
+  /// PKCS#1 — ATV remote TLS bağlantısı için (TV PKCS#8 reddediyor)
+  final String keyPemPkcs1;
   final pc.AsymmetricKeyPair<pc.RSAPublicKey, pc.RSAPrivateKey> _keyPair;
 
   SecureSocket? _socket;
@@ -767,7 +770,11 @@ class _AtvPairingSession {
   static const _clientName = 'ATV Remote';
   static const _clientId   = 'com.mibox.remote';
 
-  _AtvPairingSession._(this.ip, this.pairingPort, this.certPem, this.keyPem, this._keyPair);
+  /// Geriye dönük uyumluluk: keyPem = PKCS#1 (remote bağlantısı için kaydedilen)
+  String get keyPem => keyPemPkcs1;
+
+  _AtvPairingSession._(this.ip, this.pairingPort, this.certPem,
+      this.keyPemPkcs8, this.keyPemPkcs1, this._keyPair);
 
   static Future<_AtvPairingSession> create(String ip, {int pairingPort = 6467}) async {
     // basic_utils ile doğru formatta RSA key pair + self-signed cert üret
@@ -785,9 +792,12 @@ class _AtvPairingSession {
       rsaPrivate, csrPem, 3650,
       notBefore: DateTime.now().subtract(const Duration(days: 1)),
     );
-    final keyPem = _encodeRsaPrivateKeyPkcs1(rsaPrivate);
+    // PKCS#8: SecurityContext.usePrivateKeyBytes() için
+    final keyPemPkcs8 = CryptoUtils.encodeRSAPrivateKeyToPem(rsaPrivate);
+    // PKCS#1: ATV remote TLS için — kaydedilen ve remote_screen'e geçilen format
+    final keyPemPkcs1 = _encodeRsaPrivateKeyPkcs1(rsaPrivate);
 
-    return _AtvPairingSession._(ip, pairingPort, certPem, keyPem,
+    return _AtvPairingSession._(ip, pairingPort, certPem, keyPemPkcs8, keyPemPkcs1,
         pc.AsymmetricKeyPair<pc.RSAPublicKey, pc.RSAPrivateKey>(rsaPublic, rsaPrivate));
   }
 
@@ -798,7 +808,7 @@ class _AtvPairingSession {
       log('TLS bağlantısı kuruluyor → $ip:$pairingPort');
       final context = SecurityContext(withTrustedRoots: false);
       context.useCertificateChainBytes(utf8.encode(certPem));
-      context.usePrivateKeyBytes(utf8.encode(keyPem));
+      context.usePrivateKeyBytes(utf8.encode(keyPemPkcs8)); // PKCS#8 — Dart SecurityContext zorunluluğu
       _socket = await SecureSocket.connect(ip, pairingPort,
           context: context,
           onBadCertificate: (cert) { _serverCert = cert; return true; },
