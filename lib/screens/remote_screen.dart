@@ -74,8 +74,10 @@ class _RemoteScreenState extends State<RemoteScreen>
       }
       _addLog('Sertifika bulundu (${cert.length}b), bağlanılıyor...');
       _addLog('cert[0]: ' + cert.split('\n').first);
+      _addLog('cert son: ' + cert.trimRight().split('\n').last);
+      _addLog('cert hash: ' + cert.hashCode.toString());
       _addLog('key[0]: ' + key.split('\n').first);
-      _addLog('certLines: \${cert.split("\n").length}');
+      _addLog('certLines: ' + cert.split('\n').length.toString());
       _atv.setCertificates(cert, key);
       final ok = await _atv.connect(widget.ip, remotePort: widget.remotePort);
       _addLog(ok ? 'ATV bağlandı ✓' : 'ATV bağlantısı başarısız!');
@@ -205,6 +207,32 @@ class _RemoteScreenState extends State<RemoteScreen>
                 ),
               ),
               // Tab bar
+              // Mini log paneli — her zaman görünür
+              if (_atvLogs.isNotEmpty)
+                Container(
+                  width: double.infinity,
+                  height: 48,
+                  color: const Color(0xFF0a0a1a),
+                  child: ListView.builder(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    itemCount: _atvLogs.length,
+                    reverse: true,
+                    itemBuilder: (_, i) {
+                      final log = _atvLogs[_atvLogs.length - 1 - i];
+                      return Text(log,
+                        style: TextStyle(
+                          fontSize: 9,
+                          fontFamily: 'monospace',
+                          color: log.contains('HATA') || log.contains('KESİLDİ') || log.contains('error')
+                              ? Colors.redAccent
+                              : log.contains('✓') || log.contains('BAĞLANDI')
+                                  ? const Color(0xFF4ade80)
+                                  : Colors.grey,
+                        ),
+                      );
+                    },
+                  ),
+                ),
               TabBar(
                 controller: _tabController,
                 indicatorColor: const Color(0xFFe94560),

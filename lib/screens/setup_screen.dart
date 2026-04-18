@@ -209,6 +209,8 @@ class _SetupScreenState extends State<SetupScreen> {
 
     if (cert.isNotEmpty && key.isNotEmpty) {
       await prefs.setString('atv_cert_${device.ip}', cert);
+        _log('cert hash=' + _session!.certPem.hashCode.toString() + ' lines=' + _session!.certPem.split('\n').length.toString());
+        _log('cert[0]: ' + _session!.certPem.split('\n').first);
       await prefs.setString('atv_key_${device.ip}', key);
     }
 
@@ -726,7 +728,7 @@ class _PairingScreenState extends State<PairingScreen> {
                       ),
                     ),
                     Expanded(
-                      child: ListView.builder(
+                      child: ListView.builder(reverse: true,
                         padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
                         itemCount: _logs.length,
                         itemBuilder: (_, i) => Text(_logs[i],
