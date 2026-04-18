@@ -717,7 +717,7 @@ class _AtvPairingSession {
     final atv = asn1.ASN1Sequence();
     atv.add(asn1.ASN1ObjectIdentifier.fromBytes(
         Uint8List.fromList([0x06,0x03,0x55,0x04,0x03])));
-    atv.add(asn1.ASN1UTF8String(utf8String: cn));
+    atv.add(asn1.ASN1UTF8String(cn));
     rdn.add(atv);
     rdnSeq.add(rdn);
     return rdnSeq;
@@ -765,7 +765,7 @@ class _AtvPairingSession {
       final bitStr = spki.elements![1] as asn1.ASN1BitString;
       final pubKeySeq = asn1.ASN1Parser(bitStr.contentBytes().sublist(1))
           .nextObject() as asn1.ASN1Sequence;
-      return _bigIntToBytes((pubKeySeq.elements![0] as asn1.ASN1Integer).integer!);
+      return _bigIntToBytes(_asn1IntToBigInt(pubKeySeq.elements![0] as asn1.ASN1Integer));
     } catch (_) { return Uint8List(0); }
   }
 
@@ -777,8 +777,21 @@ class _AtvPairingSession {
       final bitStr = spki.elements![1] as asn1.ASN1BitString;
       final pubKeySeq = asn1.ASN1Parser(bitStr.contentBytes().sublist(1))
           .nextObject() as asn1.ASN1Sequence;
-      return _bigIntToBytes((pubKeySeq.elements![1] as asn1.ASN1Integer).integer!);
+      return _bigIntToBytes(_asn1IntToBigInt(pubKeySeq.elements![1] as asn1.ASN1Integer));
     } catch (_) { return Uint8List(0); }
+  }
+
+  /// asn1lib 1.6.5'te ASN1Integer.integer getter kaldırıldı.
+  /// valueBytes'tan BigInt manuel parse ediyoruz.
+  static BigInt _asn1IntToBigInt(asn1.ASN1Integer node) {
+    final bytes = node.valueBytes;
+    // İlk byte 0x00 ise (pozitif işaret byte'ı) atla
+    final start = (bytes.isNotEmpty && bytes[0] == 0x00) ? 1 : 0;
+    var result = BigInt.zero;
+    for (var i = start; i < bytes.length; i++) {
+      result = (result << 8) | BigInt.from(bytes[i]);
+    }
+    return result;
   }
 
   static Uint8List _bigIntToBytes(BigInt n) {
