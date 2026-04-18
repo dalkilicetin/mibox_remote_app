@@ -916,13 +916,19 @@ class _AtvPairingSession {
       _sendConfiguration();
       await _readMessage(); // configuration_ack
 
-      // Secret hesapla — basic_utils ile modulus/exponent extract
-      final serverCertPem = X509Utils.encodeASN1ObjectToPem(
-          ASN1Object.fromBytes(_serverCert!.der), 'CERTIFICATE', 'CERTIFICATE');
-      final serverModulus = CryptoUtils.rsaPublicKeyModulusToBytes(
-          X509Utils.publicKeyFromX509CertificatePem(serverCertPem) as pc.RSAPublicKey);
-      final serverExp = CryptoUtils.rsaPublicKeyExponentToBytes(
-          X509Utils.publicKeyFromX509CertificatePem(serverCertPem) as pc.RSAPublicKey);
+      // Server DER → PEM dönüştür
+      final serverDer = _serverCert!.der;
+      final serverCertPem = _derToCertPem(serverDer);
+
+      // getModulusFromRSAX509Pem: X509Utils'in güvenilir metodu
+      final serverModulusBigInt = X509Utils.getModulusFromRSAX509Pem(serverCertPem);
+      final serverModulus = _bigIntToUint8List(serverModulusBigInt);
+
+      // Exponent için X509CertificateData parse et
+      final certData = X509Utils.x509CertificateFromPem(serverCertPem);
+      final serverExpBigInt = certData.publicKeyData?.exponent ?? BigInt.from(65537);
+      final serverExp = _bigIntToUint8List(serverExpBigInt);
+
       final clientModulus = CryptoUtils.rsaPublicKeyModulusToBytes(_keyPair.publicKey);
       final clientExp     = CryptoUtils.rsaPublicKeyExponentToBytes(_keyPair.publicKey);
       final pinBytes      = _hexToBytes(pin.substring(4, 6));
@@ -969,6 +975,29 @@ class _AtvPairingSession {
     lenBytes.setUint32(0, payload.length, Endian.big);
     _socket!.add(lenBytes.buffer.asUint8List());
     _socket!.add(payload);
+  }
+
+  // DER → PEM sertifika dönüşümü
+  static String _derToCertPem(Uint8List der) {
+    final b64 = base64.encode(der);
+    final sb = StringBuffer('-----BEGIN CERTIFICATE-----
+');
+    for (var i = 0; i < b64.length; i += 64) {
+      sb.writeln(b64.substring(i, i + 64 > b64.length ? b64.length : i + 64));
+    }
+    sb.write('-----END CERTIFICATE-----');
+    return sb.toString();
+  }
+
+  // BigInt → Uint8List (big-endian, unsigned)
+  static Uint8List _bigIntToUint8List(BigInt n) {
+    var hex = n.toRadixString(16);
+    if (hex.length % 2 != 0) hex = '0$hex';
+    final bytes = Uint8List(hex.length ~/ 2);
+    for (var i = 0; i < bytes.length; i++) {
+      bytes[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+    }
+    return bytes;
   }
 
   void dispose() => _socket?.destroy();
