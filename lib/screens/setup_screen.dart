@@ -637,13 +637,13 @@ class _PairingScreenState extends State<PairingScreen> {
       final ok = await _session!.sendPin(pin);
       if (ok) {
         final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('atv_cert_${widget.ip}', _session!.certPem);
-        _log('cert kaydedildi: hash=' + _session!.certPem.hashCode.toString() + ' lines=' + _session!.certPem.split('\n').length.toString());
-        // Tutarlılık kontrolü: remote_screen aynı cert'i kullanacak
-        _log('PAIRING cert[0:20]: ' + _session!.certPem.replaceAll('\n','').substring(0, 20));
-        _log('PAIRING keyPkcs8[0:20]: ' + _session!.keyPemPkcs8.replaceAll('\n','').substring(0, 20));
-        // Tek key kaynağı: PKCS#8 — hem pairing hem remote için
-        await prefs.setString('atv_key_${widget.ip}', _session!.keyPemPkcs8);
+        // DER bytes → base64 string olarak kaydet
+        final certB64 = base64.encode(_session!.certDer);
+        final keyB64  = base64.encode(_session!.keyDer);
+        await prefs.setString('atv_cert_${widget.ip}', certB64);
+        await prefs.setString('atv_key_${widget.ip}',  keyB64);
+        _log('cert kaydedildi: certDer=${_session!.certDer.length}b keyDer=${_session!.keyDer.length}b');
+        _log('PAIRING certB64[0:20]: ' + certB64.substring(0, 20));
         // TV'nin sertifikayı TrustedStore'una yazması için bekle
         _log('TV kayıt bekleniyor (3s)...');
         await Future.delayed(const Duration(seconds: 3));
@@ -782,11 +782,10 @@ class _PairingScreenState extends State<PairingScreen> {
 class _AtvPairingSession {
   final String ip;
   final int pairingPort;
-  final String certPem;
-  /// PKCS#8 — SecurityContext.usePrivateKeyBytes() için (Flutter/Dart zorunluluğu)
-  final String keyPemPkcs8;
-  /// PKCS#1 — ATV remote TLS bağlantısı için (TV PKCS#8 reddediyor)
-  final String keyPemPkcs1;
+  /// Sertifika DER bytes — hem pairing hem remote TLS'te kullanılır
+  final Uint8List certDer;
+  /// PKCS#1 private key DER bytes — Flutter SecurityContext.usePrivateKeyBytes() bunu kabul eder
+  final Uint8List keyDer;
   final pc.AsymmetricKeyPair<pc.RSAPublicKey, pc.RSAPrivateKey> _keyPair;
 
   SecureSocket? _socket;
@@ -795,21 +794,17 @@ class _AtvPairingSession {
   static const _clientName = 'ATV Remote';
   static const _clientId   = 'com.mibox.remote';
 
-  /// Geriye dönük uyumluluk: keyPem = PKCS#1 (remote bağlantısı için kaydedilen)
-  String get keyPem => keyPemPkcs1;
-
-  _AtvPairingSession._(this.ip, this.pairingPort, this.certPem,
-      this.keyPemPkcs8, this.keyPemPkcs1, this._keyPair);
+  _AtvPairingSession._(this.ip, this.pairingPort, this.certDer,
+      this.keyDer, this._keyPair);
 
   /// Aynı sertifikayla farklı porta bağlanmak için kopya oluştur
   _AtvPairingSession withPort(int port) => _AtvPairingSession._(
-      ip, port, certPem, keyPemPkcs8, keyPemPkcs1, _keyPair);
-
-  /// Bağlantıyı kapat (port deneme döngüsünde kullanılır)
-  void close() { _socket?.destroy(); }
+      ip, port, certDer, keyDer, _keyPair);
 
   static Future<_AtvPairingSession> create(String ip, {int pairingPort = 6467}) async {
-    // basic_utils ile doğru formatta RSA key pair + self-signed cert üret
+    // Referans: androidtvremote2 Python kütüphanesi ile aynı yaklaşım
+    // Key: PKCS#1 DER — Flutter SecurityContext.usePrivateKeyBytes() DER kabul eder
+    // Cert: X.509 DER — useCertificateChainBytes() DER kabul eder
     final keyPair = CryptoUtils.generateRSAKeyPair(keySize: 2048);
     final rsaPrivate = keyPair.privateKey as pc.RSAPrivateKey;
     final rsaPublic  = keyPair.publicKey  as pc.RSAPublicKey;
@@ -819,20 +814,48 @@ class _AtvPairingSession {
       rsaPrivate,
       rsaPublic,
     );
-    // notBefore: 1 gün öncesi — clock drift sorununu önler
     final notBefore = DateTime.now().subtract(const Duration(days: 1));
-    print('[PAIR] cert notBefore: $notBefore (TV saati bundan ileride olmalı)');
+    print('[PAIR] cert notBefore: $notBefore');
     final certPem = X509Utils.generateSelfSignedCertificate(
       rsaPrivate, csrPem, 3650,
       notBefore: notBefore,
     );
-    // PKCS#8: SecurityContext.usePrivateKeyBytes() için
-    final keyPemPkcs8 = CryptoUtils.encodeRSAPrivateKeyToPem(rsaPrivate);
-    // PKCS#1: ATV remote TLS için — kaydedilen ve remote_screen'e geçilen format
-    final keyPemPkcs1 = _encodeRsaPrivateKeyPkcs1(rsaPrivate);
 
-    return _AtvPairingSession._(ip, pairingPort, certPem, keyPemPkcs8, keyPemPkcs1,
+    // PEM → DER: başlık/footer satırlarını at, base64 decode et
+    final certDer = _pemToDer(certPem);
+    // PKCS#1 DER: ASN.1 sequence doğrudan — PEM wrapper yok
+    final keyDer  = _rsaPrivateKeyToPkcs1Der(rsaPrivate);
+
+    print('[PAIR] certDer: ${certDer.length}b keyDer: ${keyDer.length}b');
+
+    return _AtvPairingSession._(ip, pairingPort, certDer, keyDer,
         pc.AsymmetricKeyPair<pc.RSAPublicKey, pc.RSAPrivateKey>(rsaPublic, rsaPrivate));
+  }
+
+  /// PEM string → DER bytes
+  static Uint8List _pemToDer(String pem) {
+    final lines = pem.split('\n')
+        .where((l) => l.isNotEmpty && !l.startsWith('-----'))
+        .join();
+    return base64.decode(lines);
+  }
+
+  /// RSA private key → PKCS#1 DER bytes (TraditionalOpenSSL — referansla aynı)
+  static Uint8List _rsaPrivateKeyToPkcs1Der(pc.RSAPrivateKey key) {
+    final p = key.p!;
+    final q = key.q!;
+    final d = key.privateExponent!;
+    final seq = asn1lib.ASN1Sequence()
+      ..add(asn1lib.ASN1Integer(BigInt.zero))
+      ..add(asn1lib.ASN1Integer(key.modulus!))
+      ..add(asn1lib.ASN1Integer(key.exponent!))
+      ..add(asn1lib.ASN1Integer(d))
+      ..add(asn1lib.ASN1Integer(p))
+      ..add(asn1lib.ASN1Integer(q))
+      ..add(asn1lib.ASN1Integer(d % (p - BigInt.one)))
+      ..add(asn1lib.ASN1Integer(d % (q - BigInt.one)))
+      ..add(asn1lib.ASN1Integer(q.modInverse(p)));
+    return Uint8List.fromList(seq.encodedBytes);
   }
 
   // null = başarılı, String = hata mesajı
@@ -841,8 +864,8 @@ class _AtvPairingSession {
     try {
       log('TLS bağlantısı kuruluyor → $ip:$pairingPort');
       final context = SecurityContext(withTrustedRoots: false);
-      context.useCertificateChainBytes(utf8.encode(certPem));
-      context.usePrivateKeyBytes(utf8.encode(keyPemPkcs8)); // PKCS#8 — Dart SecurityContext zorunluluğu
+      context.useCertificateChainBytes(certDer);  // DER — format karışıklığı yok
+      context.usePrivateKeyBytes(keyDer);           // PKCS#1 DER
       _socket = await SecureSocket.connect(ip, pairingPort,
           context: context,
           onBadCertificate: (cert) { _serverCert = cert; return true; },
@@ -1071,43 +1094,7 @@ class _AtvPairingSession {
     _socket!.add(Uint8List.fromList([payload.length, ...payload]));
   }
 
-  /// PKCS#1 RSA private key PEM encoder.
-  /// CryptoUtils.encodeRSAPrivateKeyToPem() PKCS#8 ("BEGIN PRIVATE KEY") üretiyor,
-  /// ATV bu formatı reddediyor. PKCS#1 = "BEGIN RSA PRIVATE KEY" gerekli.
-  static String _encodeRsaPrivateKeyPkcs1(pc.RSAPrivateKey key) {
-    // RFC 3447 PKCS#1 RSAPrivateKey ::= SEQUENCE {
-    //   version           Version,          -- 0
-    //   modulus           INTEGER,          -- n
-    //   publicExponent    INTEGER,          -- e
-    //   privateExponent   INTEGER,          -- d
-    //   prime1            INTEGER,          -- p
-    //   prime2            INTEGER,          -- q
-    //   exponent1         INTEGER,          -- d mod (p-1)
-    //   exponent2         INTEGER,          -- d mod (q-1)
-    //   coefficient       INTEGER,          -- (inverse of q) mod p
-    // }
-    final p = key.p!;
-    final q = key.q!;
-    final d = key.privateExponent!;
-    final seq = asn1lib.ASN1Sequence()
-      ..add(asn1lib.ASN1Integer(BigInt.zero))
-      ..add(asn1lib.ASN1Integer(key.modulus!))
-      ..add(asn1lib.ASN1Integer(key.exponent!))
-      ..add(asn1lib.ASN1Integer(d))
-      ..add(asn1lib.ASN1Integer(p))
-      ..add(asn1lib.ASN1Integer(q))
-      ..add(asn1lib.ASN1Integer(d % (p - BigInt.one)))
-      ..add(asn1lib.ASN1Integer(d % (q - BigInt.one)))
-      ..add(asn1lib.ASN1Integer(q.modInverse(p)));
-    final der = seq.encodedBytes;
-    final b64 = base64.encode(der);
-    // 64 karakterlik satırlar — PEM standardı
-    final wrapped = StringBuffer();
-    for (var i = 0; i < b64.length; i += 64) {
-      wrapped.writeln(b64.substring(i, (i + 64).clamp(0, b64.length)));
-    }
-    return '-----BEGIN RSA PRIVATE KEY-----\n${wrapped}-----END RSA PRIVATE KEY-----\n';
-  }
+
 
   // Referans: https://github.com/dart-lang/sdk/issues/39425
   // Çalışan SSL pinning kodu ile aynı yöntem — stringValue kullan
@@ -1177,7 +1164,7 @@ class _AtvPairingSession {
     return start == 0 ? bytes : bytes.sublist(start);
   }
 
-  void dispose() => _socket?.destroy();
+  void close() => _socket?.destroy();
 
   static Uint8List _hexToBytes(String hex) {
     if (hex.length % 2 != 0) hex = '0$hex';

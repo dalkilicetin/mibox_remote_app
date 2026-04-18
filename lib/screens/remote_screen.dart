@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -65,28 +66,18 @@ class _RemoteScreenState extends State<RemoteScreen>
     _addLog('ATV bağlanılıyor: ${widget.ip}:${widget.remotePort}');
     try {
       final prefs = await SharedPreferences.getInstance();
-      final cert = prefs.getString('atv_cert_${widget.ip}') ?? '';
-      final key  = prefs.getString('atv_key_${widget.ip}') ?? '';
-      if (cert.isEmpty || key.isEmpty) {
+      final certB64 = prefs.getString('atv_cert_${widget.ip}') ?? '';
+      final keyB64  = prefs.getString('atv_key_${widget.ip}') ?? '';
+      if (certB64.isEmpty || keyB64.isEmpty) {
         _addLog('HATA: Sertifika bulunamadı! Yeniden eşleştir.');
         return;
       }
-      _addLog('Sertifika bulundu (${cert.length}b), bağlanılıyor...');
-      _addLog('cert[0]: ' + cert.split('\n').first);
-      _addLog('cert son: ' + cert.trimRight().split('\n').last);
-      _addLog('cert hash: ' + cert.hashCode.toString());
-      _addLog('key[0]: ' + key.split('\n').first);
-      _addLog('certLines: ' + cert.split('\n').length.toString());
-      // Hash karşılaştırması — pairing ile remote aynı sertifika mı?
-      final savedHash = cert.hashCode;
-      _addLog('Remote cert hash: $savedHash (${cert.split("\n").length} satır)');
-      _addLog('Remote key[0]: ${key.split("\n").first}');
-      // Tutarlılık kontrolü — pairing logu ile karşılaştır
-      final c20 = cert.replaceAll('\n','');
-      final k20 = key.replaceAll('\n','');
-      _addLog('REMOTE cert[0:20]: ' + (c20.length > 20 ? c20.substring(0,20) : c20));
-      _addLog('REMOTE key[0:20]: ' + (k20.length > 20 ? k20.substring(0,20) : k20));
-      _atv.setCertificates(cert, key);
+      // base64 → DER bytes
+      final certDer = base64.decode(certB64);
+      final keyDer  = base64.decode(keyB64);
+      _addLog('Sertifika bulundu: certDer=\${certDer.length}b keyDer=\${keyDer.length}b');
+      _addLog('REMOTE certB64[0:20]: \${certB64.substring(0, certB64.length > 20 ? 20 : certB64.length)}');
+      _atv.setCertificatesDer(certDer, keyDer);
       final ok = await _atv.connect(widget.ip, remotePort: widget.remotePort);
       _addLog(ok ? 'ATV bağlandı ✓' : 'ATV bağlantısı başarısız!');
       // Race condition kontrolü: connect true döndü ama stream gelmedi mi?
