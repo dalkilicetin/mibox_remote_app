@@ -6,9 +6,18 @@ import 'air_mouse_screen.dart';
 import 'touchpad_screen.dart';
 
 class RemoteScreen extends StatefulWidget {
-  final MiBoxService service;
+  final MiBoxService? service; // null = APK yok, sadece ATV mod
   final String ip;
-  const RemoteScreen({super.key, required this.service, required this.ip});
+  final int remotePort;
+  final int pairingPort;
+
+  const RemoteScreen({
+    super.key,
+    required this.service,
+    required this.ip,
+    this.remotePort  = 6466,
+    this.pairingPort = 6467,
+  });
 
   @override
   State<RemoteScreen> createState() => _RemoteScreenState();
@@ -17,18 +26,24 @@ class RemoteScreen extends StatefulWidget {
 class _RemoteScreenState extends State<RemoteScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
-  bool _connected = true;
+  bool _apkConnected = false;
   final AtvRemoteService _atv = AtvRemoteService();
   bool _atvConnected = false;
+
+  bool get _hasApk => widget.service != null;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    // APK varsa 2 tab (Air Mouse + Touchpad), yoksa 1 tab (D-Pad)
+    _tabController = TabController(length: _hasApk ? 2 : 1, vsync: this);
 
-    widget.service.connectionStream.listen((connected) {
-      if (mounted) setState(() => _connected = connected);
-    });
+    if (_hasApk) {
+      _apkConnected = widget.service!.isConnected;
+      widget.service!.connectionStream.listen((connected) {
+        if (mounted) setState(() => _apkConnected = connected);
+      });
+    }
 
     _atv.connectionStream.listen((connected) {
       if (mounted) setState(() => _atvConnected = connected);
@@ -40,25 +55,17 @@ class _RemoteScreenState extends State<RemoteScreen>
   Future<void> _initAtv() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      // Yeni format önce denenir, ardından eski formatlardan migration yapılır
       final cert = prefs.getString('atv_cert_${widget.ip}')
                 ?? prefs.getString('mibox_cert_${widget.ip}')
-                ?? prefs.getString('mibox_cert')
-                ?? '';
+                ?? prefs.getString('mibox_cert') ?? '';
       final key  = prefs.getString('atv_key_${widget.ip}')
                 ?? prefs.getString('mibox_key_${widget.ip}')
-                ?? prefs.getString('mibox_key')
-                ?? '';
-      // Eski formattan geldiyse yeni formata yaz
+                ?? prefs.getString('mibox_key') ?? '';
       if (cert.isNotEmpty && key.isNotEmpty) {
         await prefs.setString('atv_cert_${widget.ip}', cert);
         await prefs.setString('atv_key_${widget.ip}', key);
-      }
-      if (cert.isNotEmpty && key.isNotEmpty) {
         _atv.setCertificates(cert, key);
-        await _atv.connect(widget.ip);
-      } else {
-        print('[ATV] Sertifika yok — pairing gerekli');
+        await _atv.connect(widget.ip, remotePort: widget.remotePort);
       }
     } catch (e) {
       print('[ATV] Init error: $e');
@@ -68,7 +75,7 @@ class _RemoteScreenState extends State<RemoteScreen>
   @override
   void dispose() {
     _tabController.dispose();
-    widget.service.dispose();
+    widget.service?.dispose();
     _atv.dispose();
     super.dispose();
   }
@@ -82,39 +89,37 @@ class _RemoteScreenState extends State<RemoteScreen>
         child: SafeArea(
           child: Column(
             children: [
+              // Status bar
               Container(
                 color: const Color(0xFF12122a),
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
                 child: Row(
                   children: [
-                    Icon(
-                      _connected ? Icons.wifi : Icons.wifi_off,
-                      color: _connected ? const Color(0xFF4ade80) : Colors.red,
-                      size: 14,
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      _connected ? widget.ip : 'Baglanti kesildi',
-                      style: TextStyle(
-                        color: _connected ? const Color(0xFF4ade80) : Colors.red,
-                        fontSize: 12,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Icon(
-                      Icons.tv,
-                      color: _atvConnected ? const Color(0xFF4ade80) : Colors.grey,
-                      size: 14,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      _atvConnected ? 'TV Remote' : 'TV Yok',
-                      style: TextStyle(
+                    // APK durumu
+                    if (_hasApk) ...[
+                      Icon(Icons.mouse,
+                          color: _apkConnected ? const Color(0xFF4ade80) : Colors.red,
+                          size: 14),
+                      const SizedBox(width: 4),
+                      Text(_apkConnected ? 'Cursor' : 'Cursor yok',
+                          style: TextStyle(
+                              color: _apkConnected ? const Color(0xFF4ade80) : Colors.red,
+                              fontSize: 11)),
+                      const SizedBox(width: 12),
+                    ],
+                    // ATV Remote durumu
+                    Icon(Icons.tv,
                         color: _atvConnected ? const Color(0xFF4ade80) : Colors.grey,
-                        fontSize: 11,
-                      ),
-                    ),
+                        size: 14),
+                    const SizedBox(width: 4),
+                    Text(_atvConnected ? 'TV Remote' : 'TV bağlantısı yok',
+                        style: TextStyle(
+                            color: _atvConnected ? const Color(0xFF4ade80) : Colors.grey,
+                            fontSize: 11)),
                     const Spacer(),
+                    Text(widget.ip,
+                        style: const TextStyle(color: Colors.grey, fontSize: 11)),
+                    const SizedBox(width: 8),
                     GestureDetector(
                       onTap: () => Navigator.pop(context),
                       child: const Icon(Icons.settings, color: Colors.grey, size: 18),
@@ -122,14 +127,16 @@ class _RemoteScreenState extends State<RemoteScreen>
                   ],
                 ),
               ),
+              // Tab bar
               TabBar(
                 controller: _tabController,
                 indicatorColor: const Color(0xFFe94560),
                 labelColor: const Color(0xFFe94560),
                 unselectedLabelColor: Colors.grey,
-                tabs: const [
-                  Tab(text: 'Air Mouse'),
-                  Tab(text: 'Touchpad'),
+                tabs: [
+                  if (_hasApk) const Tab(text: 'Air Mouse'),
+                  if (_hasApk) const Tab(text: 'Touchpad'),
+                  if (!_hasApk) const Tab(text: 'Kumanda'),
                 ],
               ),
             ],
@@ -140,9 +147,146 @@ class _RemoteScreenState extends State<RemoteScreen>
         controller: _tabController,
         physics: const NeverScrollableScrollPhysics(),
         children: [
-          AirMouseScreen(service: widget.service, atv: _atv),
-          TouchpadScreen(service: widget.service, atv: _atv),
+          if (_hasApk) AirMouseScreen(service: widget.service!, atv: _atv),
+          if (_hasApk) TouchpadScreen(service: widget.service!, atv: _atv),
+          if (!_hasApk) _DpadScreen(atv: _atv),
         ],
+      ),
+    );
+  }
+}
+
+// ── D-Pad ekranı — APK olmadan sadece ATV tuş komutları ─────────────────────
+class _DpadScreen extends StatelessWidget {
+  final AtvRemoteService atv;
+  const _DpadScreen({required this.atv});
+
+  void _key(int code) => atv.sendKey(code);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          // Bilgi notu
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0f3460),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.info_outline, color: Colors.grey, size: 16),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'AirCursor APK kurulu değil. Cursor ve dokunmatik pad kullanmak için APK\'yı TV\'ye kurun.',
+                    style: TextStyle(color: Colors.grey, fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 32),
+
+          // Ses kontrolleri
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              _btn(Icons.volume_down, () => _key(25)),
+              const SizedBox(width: 16),
+              _btn(Icons.volume_up, () => _key(24)),
+            ],
+          ),
+          const SizedBox(height: 24),
+
+          // D-Pad
+          Column(
+            children: [
+              _btn(Icons.keyboard_arrow_up, () => _key(19)),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _btn(Icons.keyboard_arrow_left, () => _key(21)),
+                  const SizedBox(width: 8),
+                  _centerBtn(),
+                  const SizedBox(width: 8),
+                  _btn(Icons.keyboard_arrow_right, () => _key(22)),
+                ],
+              ),
+              const SizedBox(height: 8),
+              _btn(Icons.keyboard_arrow_down, () => _key(20)),
+            ],
+          ),
+          const SizedBox(height: 24),
+
+          // Back / Home / Play
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              _labelBtn(Icons.arrow_back, 'Geri', () => _key(4)),
+              const SizedBox(width: 16),
+              _labelBtn(Icons.home, 'Ana Sayfa', () => _key(3)),
+              const SizedBox(width: 16),
+              _labelBtn(Icons.play_arrow, 'Play', () => _key(85)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _btn(IconData icon, VoidCallback onTap) {
+    return GestureDetector(
+      onTapDown: (_) => onTap(),
+      child: Container(
+        width: 64, height: 64,
+        decoration: BoxDecoration(
+          color: const Color(0xFF16213e),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFF0f3460)),
+        ),
+        child: Icon(icon, color: Colors.white, size: 28),
+      ),
+    );
+  }
+
+  Widget _centerBtn() {
+    return GestureDetector(
+      onTapDown: (_) => atv.sendKey(23),
+      child: Container(
+        width: 64, height: 64,
+        decoration: BoxDecoration(
+          color: const Color(0xFFe94560),
+          borderRadius: BorderRadius.circular(32),
+        ),
+        child: const Icon(Icons.circle, color: Colors.white, size: 20),
+      ),
+    );
+  }
+
+  Widget _labelBtn(IconData icon, String label, VoidCallback onTap) {
+    return GestureDetector(
+      onTapDown: (_) => onTap(),
+      child: Container(
+        width: 80, height: 64,
+        decoration: BoxDecoration(
+          color: const Color(0xFF16213e),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFF0f3460)),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, color: Colors.white, size: 20),
+            const SizedBox(height: 2),
+            Text(label, style: const TextStyle(color: Colors.grey, fontSize: 9)),
+          ],
+        ),
       ),
     );
   }

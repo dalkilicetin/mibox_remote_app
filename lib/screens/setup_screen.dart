@@ -8,16 +8,27 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:pointycastle/export.dart' as pc;
 import 'package:asn1lib/asn1lib.dart' as asn1;
 import '../services/mibox_service.dart';
+import '../services/atv_remote_service.dart';
 import 'remote_screen.dart';
 
-// ── Bulunan cihaz modeli ────────────────────────────────────────────────────
+// ── Bulunan cihaz modeli ──────────────────────────────────────────────────────
 class DiscoveredDevice {
   final String ip;
   final bool hasCert;
-  const DiscoveredDevice({required this.ip, required this.hasCert});
+  final bool hasApk;       // AirCursor APK çalışıyor mu
+  final int pairingPort;
+  final int remotePort;
+
+  const DiscoveredDevice({
+    required this.ip,
+    required this.hasCert,
+    required this.hasApk,
+    this.pairingPort = 6467,
+    this.remotePort  = 6466,
+  });
 }
 
-// ── Setup Screen ─────────────────────────────────────────────────────────────
+// ── Setup Screen ──────────────────────────────────────────────────────────────
 class SetupScreen extends StatefulWidget {
   const SetupScreen({super.key});
   @override
@@ -37,9 +48,7 @@ class _SetupScreenState extends State<SetupScreen> {
     _startScan();
   }
 
-  // RFC 1918 private IP aralıklarının tamamını destekler:
-  // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
-  // Birden fazla interface varsa hepsini döner
+  // ── Subnet discovery ────────────────────────────────────────────────────────
   Future<List<String>> _getSubnets() async {
     final subnets = <String>[];
     try {
@@ -49,67 +58,89 @@ class _SetupScreenState extends State<SetupScreen> {
       );
       for (final iface in ifaces) {
         for (final addr in iface.addresses) {
-          final ip = addr.address;
-          final parts = ip.split('.');
+          final parts = addr.address.split('.');
           if (parts.length != 4) continue;
-          final first = int.tryParse(parts[0]) ?? 0;
-          final second = int.tryParse(parts[1]) ?? 0;
+          final a = int.tryParse(parts[0]) ?? 0;
+          final b = int.tryParse(parts[1]) ?? 0;
           String? subnet;
-          if (first == 10) {
-            subnet = '${parts[0]}.${parts[1]}.${parts[2]}';
-          } else if (first == 172 && second >= 16 && second <= 31) {
-            subnet = '${parts[0]}.${parts[1]}.${parts[2]}';
-          } else if (first == 192 && second == 168) {
-            subnet = '${parts[0]}.${parts[1]}.${parts[2]}';
-          }
-          if (subnet != null && !subnets.contains(subnet)) {
-            subnets.add(subnet);
-          }
+          if (a == 10) subnet = '${parts[0]}.${parts[1]}.${parts[2]}';
+          else if (a == 172 && b >= 16 && b <= 31) subnet = '${parts[0]}.${parts[1]}.${parts[2]}';
+          else if (a == 192 && b == 168) subnet = '${parts[0]}.${parts[1]}.${parts[2]}';
+          if (subnet != null && !subnets.contains(subnet)) subnets.add(subnet);
         }
       }
     } catch (_) {}
     return subnets;
   }
 
-  Future<bool> _checkAtv(String ip) async {
-    for (final port in [6466, 6467]) {
-      try {
-        final sock = await Socket.connect(ip, port,
-            timeout: const Duration(milliseconds: 400));
+  // ── ATV port tarama (paralel) ───────────────────────────────────────────────
+  static const _pairingPorts = [6467, 6468, 7676];
+  static const _remotePorts  = [6466, 6468, 7675];
+
+  Future<int?> _tryPorts(String ip, List<int> ports) async {
+    final completer = Completer<int?>();
+    var pending = ports.length;
+    for (final port in ports) {
+      Socket.connect(ip, port, timeout: const Duration(milliseconds: 600))
+          .then((sock) {
         sock.destroy();
-        return true;
-      } catch (_) {}
+        if (!completer.isCompleted) completer.complete(port);
+      }).catchError((_) {
+        pending--;
+        if (pending == 0 && !completer.isCompleted) completer.complete(null);
+      });
     }
-    return false;
+    return completer.future;
   }
 
+  // ── Ana tarama ──────────────────────────────────────────────────────────────
   Future<void> _startScan() async {
     setState(() {
       _scanning = true;
       _devices = [];
-      _scanStatus = 'Ağ adresi alınıyor...';
+      _scanStatus = 'AirCursor APK aranıyor (UDP)...';
       _scanned = 0;
       _total = 0;
     });
 
-    final subnets = await _getSubnets();
-    if (subnets.isEmpty) {
-      setState(() {
-        _scanning = false;
-        _scanStatus = 'Wi-Fi ağı bulunamadı.\nWi-Fi\'a bağlı olduğunuzdan emin olun.';
-      });
+    final prefs = await SharedPreferences.getInstance();
+    final found = <DiscoveredDevice>[];
+
+    // 1. UDP broadcast — APK'dan doğrudan port bilgisi al (hızlı)
+    await MiBoxService.discoverDevices(
+      timeout: const Duration(seconds: 3),
+      onDeviceFound: (device) async {
+        final ip = device['ip'] as String;
+        final pairingPort = device['atvPairingPort'] as int;
+        final remotePort  = device['atvRemotePort']  as int;
+        final hasCert = (prefs.getString('atv_cert_$ip') ?? '').isNotEmpty;
+        await prefs.setInt('atv_pairing_port_$ip', pairingPort);
+        await prefs.setInt('atv_remote_port_$ip',  remotePort);
+        if (!found.any((d) => d.ip == ip)) {
+          final d = DiscoveredDevice(
+            ip: ip, hasCert: hasCert, hasApk: true,
+            pairingPort: pairingPort, remotePort: remotePort,
+          );
+          found.add(d);
+          if (mounted) setState(() => _devices = List.from(found));
+        }
+      },
+    );
+
+    if (found.isNotEmpty) {
+      if (mounted) setState(() { _scanning = false; _scanStatus = '${found.length} cihaz bulundu'; });
       return;
     }
 
-    // Birden fazla subnet olabilir (VPN + Wi-Fi gibi)
-    // Her subnet için 254 host taranır
-    setState(() {
-      _scanStatus = 'Taranıyor: ${subnets.length} ağ...';
-      _total = 254 * subnets.length;
-    });
+    // 2. Fallback: IP taraması — ATV portları + APK portu ayrı ayrı kontrol
+    setState(() => _scanStatus = 'IP taraması yapılıyor...');
+    final subnets = await _getSubnets();
+    if (subnets.isEmpty) {
+      setState(() { _scanning = false; _scanStatus = 'Wi-Fi ağı bulunamadı.'; });
+      return;
+    }
 
-    final prefs = await SharedPreferences.getInstance();
-    final found = <DiscoveredDevice>[];
+    setState(() { _total = 254 * subnets.length; });
     const batchSize = 30;
     var totalScanned = 0;
 
@@ -125,14 +156,37 @@ class _SetupScreenState extends State<SetupScreen> {
         for (var i = start; i <= end; i++) {
           final ip = '$subnet.$i';
           futures.add(() async {
-            final hasAtv = await _checkAtv(ip);
-            if (hasAtv) {
-              final hasCert = (prefs.getString('atv_cert_$ip') ?? '').isNotEmpty;
-              // Aynı IP zaten listede varsa ekleme
-              if (!found.any((d) => d.ip == ip)) {
-                found.add(DiscoveredDevice(ip: ip, hasCert: hasCert));
-                if (mounted) setState(() => _devices = List.from(found));
-              }
+            // ATV portları ve APK portunu paralel tara
+            final results = await Future.wait([
+              _tryPorts(ip, _pairingPorts),
+              _tryPorts(ip, _remotePorts),
+              // APK port 9876
+              Socket.connect(ip, 9876, timeout: const Duration(milliseconds: 600))
+                  .then((s) { s.destroy(); return true; })
+                  .catchError((_) => false),
+            ]);
+
+            final pairingPort = results[0] as int?;
+            final remotePort  = results[1] as int?;
+            final hasApk      = results[2] as bool;
+
+            // En az ATV ya da APK portlarından biri açık olmalı
+            if (pairingPort == null && remotePort == null && !hasApk) return;
+
+            final hasCert = (prefs.getString('atv_cert_$ip') ?? '').isNotEmpty;
+            if (pairingPort != null) await prefs.setInt('atv_pairing_port_$ip', pairingPort);
+            if (remotePort  != null) await prefs.setInt('atv_remote_port_$ip',  remotePort);
+
+            if (!found.any((d) => d.ip == ip) && mounted) {
+              final d = DiscoveredDevice(
+                ip: ip,
+                hasCert: hasCert,
+                hasApk: hasApk,
+                pairingPort: pairingPort ?? 6467,
+                remotePort:  remotePort  ?? 6466,
+              );
+              found.add(d);
+              setState(() => _devices = List.from(found));
             }
           }());
         }
@@ -147,26 +201,22 @@ class _SetupScreenState extends State<SetupScreen> {
       setState(() {
         _scanning = false;
         _scanStatus = found.isEmpty
-            ? 'Cihaz bulunamadı. TV açık ve aynı ağda mı?'
+            ? 'Cihaz bulunamadı. TV açık mı?'
             : '${found.length} cihaz bulundu';
       });
     }
   }
 
+  // ── Bağlan ─────────────────────────────────────────────────────────────────
   Future<void> _connectTo(DiscoveredDevice device) async {
     final prefs = await SharedPreferences.getInstance();
-    // Yeni format: atv_cert_{ip}
-    // Eski format migration: mibox_cert_{ip} veya mibox_cert (global)
     final cert = prefs.getString('atv_cert_${device.ip}')
         ?? prefs.getString('mibox_cert_${device.ip}')
-        ?? prefs.getString('mibox_cert')
-        ?? '';
+        ?? prefs.getString('mibox_cert') ?? '';
     final key = prefs.getString('atv_key_${device.ip}')
         ?? prefs.getString('mibox_key_${device.ip}')
-        ?? prefs.getString('mibox_key')
-        ?? '';
+        ?? prefs.getString('mibox_key') ?? '';
 
-    // Eski formatta bulunduysa yeni formata migrate et
     if (cert.isNotEmpty && key.isNotEmpty) {
       await prefs.setString('atv_cert_${device.ip}', cert);
       await prefs.setString('atv_key_${device.ip}', key);
@@ -176,35 +226,46 @@ class _SetupScreenState extends State<SetupScreen> {
       if (!mounted) return;
       final result = await Navigator.push<bool>(
         context,
-        MaterialPageRoute(builder: (_) => PairingScreen(ip: device.ip)),
+        MaterialPageRoute(builder: (_) => PairingScreen(
+          ip: device.ip, pairingPort: device.pairingPort)),
       );
-      if (result == true) await _launchRemote(device.ip);
+      if (result == true) await _launchRemote(device);
     } else {
-      await _launchRemote(device.ip);
+      await _launchRemote(device);
     }
   }
 
-  Future<void> _launchRemote(String ip) async {
-    final service = MiBoxService();
-    final ok = await service.connect(ip);
+  Future<void> _launchRemote(DiscoveredDevice device) async {
+    // APK varsa bağlan, yoksa null service ile sadece ATV mod
+    MiBoxService? service;
+    int remotePort = device.remotePort;
+
+    if (device.hasApk) {
+      service = MiBoxService();
+      final ok = await service.connect(device.ip);
+      if (!ok) service = null;
+      // APK'dan gelen gerçek ATV portunu kullan
+      if (service != null) remotePort = service.atvRemotePort;
+    }
+
     if (!mounted) return;
-    if (ok) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('mibox_ip', ip);
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => RemoteScreen(service: service, ip: ip)),
-      );
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('$ip — AirCursor APK çalışmıyor!'),
-          backgroundColor: Colors.redAccent,
-        ),
-      );
-    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('mibox_ip', device.ip);
+    await prefs.setInt('atv_remote_port_${device.ip}', remotePort);
+    await prefs.setInt('atv_pairing_port_${device.ip}', device.pairingPort);
+
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (_) => RemoteScreen(
+        service: service,      // null ise sadece ATV mod
+        ip: device.ip,
+        remotePort: remotePort,
+        pairingPort: device.pairingPort,
+      )),
+    );
   }
 
+  // ── Manuel IP ──────────────────────────────────────────────────────────────
   Future<void> _manualEntry() async {
     final ctrl = TextEditingController();
     final prefs = await SharedPreferences.getInstance();
@@ -223,7 +284,7 @@ class _SetupScreenState extends State<SetupScreen> {
           autofocus: true,
           style: const TextStyle(color: Colors.white),
           decoration: InputDecoration(
-            hintText: '192.168.x.x',  // Ağınızın IP aralığını girin
+            hintText: '192.168.x.x',
             hintStyle: const TextStyle(color: Colors.grey),
             filled: true,
             fillColor: const Color(0xFF0f3460),
@@ -233,10 +294,8 @@ class _SetupScreenState extends State<SetupScreen> {
           ),
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('İptal', style: TextStyle(color: Colors.grey)),
-          ),
+          TextButton(onPressed: () => Navigator.pop(context),
+              child: const Text('İptal', style: TextStyle(color: Colors.grey))),
           ElevatedButton(
             onPressed: () => Navigator.pop(context, ctrl.text.trim()),
             style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFe94560)),
@@ -247,12 +306,23 @@ class _SetupScreenState extends State<SetupScreen> {
     );
 
     if (ip == null || ip.isEmpty) return;
-    final cert = prefs.getString('atv_cert_$ip')
-        ?? prefs.getString('mibox_cert_$ip') ?? '';
-    final device = DiscoveredDevice(ip: ip, hasCert: cert.isNotEmpty);
+    final cert = prefs.getString('atv_cert_$ip') ?? prefs.getString('mibox_cert_$ip') ?? '';
+    final pairingPort = prefs.getInt('atv_pairing_port_$ip') ?? 6467;
+    final remotePort  = prefs.getInt('atv_remote_port_$ip')  ?? 6466;
+    // APK portunu hızlıca kontrol et
+    bool hasApk = false;
+    try {
+      final s = await Socket.connect(ip, 9876, timeout: const Duration(seconds: 2));
+      s.destroy(); hasApk = true;
+    } catch (_) {}
+    final device = DiscoveredDevice(
+      ip: ip, hasCert: cert.isNotEmpty, hasApk: hasApk,
+      pairingPort: pairingPort, remotePort: remotePort,
+    );
     await _connectTo(device);
   }
 
+  // ── UI ─────────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -260,25 +330,21 @@ class _SetupScreenState extends State<SetupScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // Header
             Container(
               padding: const EdgeInsets.fromLTRB(20, 28, 20, 16),
               child: Column(
                 children: [
                   const Icon(Icons.tv, color: Color(0xFFe94560), size: 56),
                   const SizedBox(height: 10),
-                  const Text('Mi Box Remote',
-                      style: TextStyle(
-                          color: Colors.white, fontSize: 26, fontWeight: FontWeight.bold)),
+                  const Text('Mi Box Remote', style: TextStyle(
+                      color: Colors.white, fontSize: 26, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 6),
-                  Text(_scanStatus,
-                      textAlign: TextAlign.center,
+                  Text(_scanStatus, textAlign: TextAlign.center,
                       style: const TextStyle(color: Colors.grey, fontSize: 13)),
                 ],
               ),
             ),
 
-            // Progress
             if (_scanning)
               Padding(
                 padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
@@ -298,7 +364,6 @@ class _SetupScreenState extends State<SetupScreen> {
                 ),
               ),
 
-            // Liste
             Expanded(
               child: _devices.isEmpty && !_scanning
                   ? Center(
@@ -327,22 +392,21 @@ class _SetupScreenState extends State<SetupScreen> {
                             final prefs = await SharedPreferences.getInstance();
                             await prefs.remove('atv_cert_${d.ip}');
                             await prefs.remove('atv_key_${d.ip}');
-                            // Eski format temizle
                             await prefs.remove('mibox_cert_${d.ip}');
                             await prefs.remove('mibox_key_${d.ip}');
                             if (!mounted) return;
                             final result = await Navigator.push<bool>(
                               context,
-                              MaterialPageRoute(builder: (_) => PairingScreen(ip: d.ip)),
+                              MaterialPageRoute(builder: (_) =>
+                                  PairingScreen(ip: d.ip, pairingPort: d.pairingPort)),
                             );
-                            if (result == true) await _launchRemote(d.ip);
+                            if (result == true) await _launchRemote(d);
                           },
                         );
                       },
                     ),
             ),
 
-            // Alt butonlar
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
               child: Row(
@@ -351,17 +415,15 @@ class _SetupScreenState extends State<SetupScreen> {
                     child: OutlinedButton.icon(
                       onPressed: _scanning ? null : _startScan,
                       icon: _scanning
-                          ? const SizedBox(
-                              width: 16, height: 16,
+                          ? const SizedBox(width: 16, height: 16,
                               child: CircularProgressIndicator(
                                   color: Color(0xFFe94560), strokeWidth: 2))
                           : const Icon(Icons.refresh, color: Color(0xFFe94560)),
-                      label: Text(_scanning ? 'Taranıyor...' : 'Yeniden Tara',
+                      label: Text(_scanning ? 'Aranıyor...' : 'Yeniden Tara',
                           style: const TextStyle(color: Color(0xFFe94560))),
                       style: OutlinedButton.styleFrom(
                         side: const BorderSide(color: Color(0xFFe94560)),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12)),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         padding: const EdgeInsets.symmetric(vertical: 13),
                       ),
                     ),
@@ -371,12 +433,10 @@ class _SetupScreenState extends State<SetupScreen> {
                     child: OutlinedButton.icon(
                       onPressed: _manualEntry,
                       icon: const Icon(Icons.edit, color: Colors.grey),
-                      label: const Text('Manuel IP',
-                          style: TextStyle(color: Colors.grey)),
+                      label: const Text('Manuel IP', style: TextStyle(color: Colors.grey)),
                       style: OutlinedButton.styleFrom(
                         side: const BorderSide(color: Colors.grey),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12)),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         padding: const EdgeInsets.symmetric(vertical: 13),
                       ),
                     ),
@@ -397,11 +457,7 @@ class _DeviceCard extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onRepair;
 
-  const _DeviceCard({
-    required this.device,
-    required this.onTap,
-    required this.onRepair,
-  });
+  const _DeviceCard({required this.device, required this.onTap, required this.onRepair});
 
   @override
   Widget build(BuildContext context) {
@@ -421,15 +477,11 @@ class _DeviceCard extends StatelessWidget {
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         leading: Container(
           width: 44, height: 44,
-          decoration: BoxDecoration(
-            color: const Color(0xFF0f3460),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Icon(
-            Icons.tv,
-            color: device.hasCert ? const Color(0xFF4ade80) : const Color(0xFFe94560),
-            size: 24,
-          ),
+          decoration: BoxDecoration(color: const Color(0xFF0f3460),
+              borderRadius: BorderRadius.circular(10)),
+          child: Icon(Icons.tv,
+              color: device.hasCert ? const Color(0xFF4ade80) : const Color(0xFFe94560),
+              size: 24),
         ),
         title: const Text('Mi Box',
             style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 15)),
@@ -438,12 +490,35 @@ class _DeviceCard extends StatelessWidget {
           children: [
             Text(device.ip, style: const TextStyle(color: Colors.grey, fontSize: 12)),
             const SizedBox(height: 2),
-            Text(
-              device.hasCert ? '✓ Eşleştirildi' : 'Eşleştirilmedi',
-              style: TextStyle(
-                color: device.hasCert ? const Color(0xFF4ade80) : const Color(0xFFfbbf24),
-                fontSize: 11,
-              ),
+            Row(
+              children: [
+                // Eşleştirme durumu
+                Text(
+                  device.hasCert ? '✓ Eşleştirildi' : 'Eşleştirilmedi',
+                  style: TextStyle(
+                    color: device.hasCert ? const Color(0xFF4ade80) : const Color(0xFFfbbf24),
+                    fontSize: 11,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // APK durumu
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: device.hasApk
+                        ? const Color(0xFF4ade80).withOpacity(0.15)
+                        : Colors.grey.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    device.hasApk ? 'APK ✓' : 'APK yok',
+                    style: TextStyle(
+                      color: device.hasApk ? const Color(0xFF4ade80) : Colors.grey,
+                      fontSize: 10,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -463,10 +538,8 @@ class _DeviceCard extends StatelessWidget {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
               ),
-              child: Text(
-                device.hasCert ? 'Bağlan' : 'Eşleştir',
-                style: const TextStyle(color: Colors.white, fontSize: 13),
-              ),
+              child: Text(device.hasCert ? 'Bağlan' : 'Eşleştir',
+                  style: const TextStyle(color: Colors.white, fontSize: 13)),
             ),
           ],
         ),
@@ -479,8 +552,8 @@ class _DeviceCard extends StatelessWidget {
 // ── Pairing Screen ────────────────────────────────────────────────────────────
 class PairingScreen extends StatefulWidget {
   final String ip;
-  const PairingScreen({super.key, required this.ip});
-
+  final int pairingPort;
+  const PairingScreen({super.key, required this.ip, this.pairingPort = 6467});
   @override
   State<PairingScreen> createState() => _PairingScreenState();
 }
@@ -493,24 +566,18 @@ class _PairingScreenState extends State<PairingScreen> {
   _AtvPairingSession? _session;
 
   @override
-  void initState() {
-    super.initState();
-    _startPairing();
-  }
+  void initState() { super.initState(); _startPairing(); }
 
   Future<void> _startPairing() async {
     try {
       setState(() => _status = 'Sertifika oluşturuluyor...');
-      _session = await _AtvPairingSession.create(widget.ip);
+      _session = await _AtvPairingSession.create(widget.ip, pairingPort: widget.pairingPort);
       setState(() => _status = 'TV\'ye bağlanılıyor...');
       final ok = await _session!.connect();
       if (ok) {
-        setState(() {
-          _status = 'TV ekranındaki 6 haneli kodu girin:';
-          _waitingPin = true;
-        });
+        setState(() { _status = 'TV ekranındaki 6 haneli kodu girin:'; _waitingPin = true; });
       } else {
-        setState(() => _status = 'Bağlantı hatası! TV açık mı?\n(port 6467)');
+        setState(() => _status = 'Bağlantı hatası! TV açık mı?\n(port ${widget.pairingPort})');
       }
     } catch (e) {
       setState(() => _status = 'Hata: $e');
@@ -557,8 +624,7 @@ class _PairingScreenState extends State<PairingScreen> {
           children: [
             const Icon(Icons.link, color: Color(0xFFe94560), size: 64),
             const SizedBox(height: 24),
-            Text(_status,
-                textAlign: TextAlign.center,
+            Text(_status, textAlign: TextAlign.center,
                 style: const TextStyle(color: Colors.white, fontSize: 16)),
             if (_waitingPin) ...[
               const SizedBox(height: 32),
@@ -566,19 +632,17 @@ class _PairingScreenState extends State<PairingScreen> {
                 controller: _pinController,
                 autofocus: true,
                 textAlign: TextAlign.center,
-                style: const TextStyle(
-                    color: Colors.white, fontSize: 32, letterSpacing: 8, fontWeight: FontWeight.bold),
+                style: const TextStyle(color: Colors.white, fontSize: 32,
+                    letterSpacing: 8, fontWeight: FontWeight.bold),
                 maxLength: 6,
                 textCapitalization: TextCapitalization.characters,
                 decoration: InputDecoration(
                   hintText: 'XXXXXX',
                   hintStyle: const TextStyle(color: Colors.grey, fontSize: 32),
-                  filled: true,
-                  fillColor: const Color(0xFF0f3460),
-                  border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                  focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
+                  filled: true, fillColor: const Color(0xFF0f3460),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide.none),
+                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12),
                       borderSide: const BorderSide(color: Color(0xFFe94560))),
                   counterText: '',
                 ),
@@ -612,9 +676,8 @@ class _PairingScreenState extends State<PairingScreen> {
 
 // ── Pairing Session ───────────────────────────────────────────────────────────
 class _AtvPairingSession {
-  static const int _pairingPort = 6467;
-
   final String ip;
+  final int pairingPort;
   final String certPem;
   final String keyPem;
   final pc.AsymmetricKeyPair<pc.RSAPublicKey, pc.RSAPrivateKey> _keyPair;
@@ -622,13 +685,16 @@ class _AtvPairingSession {
   SecureSocket? _socket;
   X509Certificate? _serverCert;
 
-  _AtvPairingSession._(this.ip, this.certPem, this.keyPem, this._keyPair);
+  static const _clientName = 'ATV Remote';
+  static const _clientId   = 'com.mibox.remote';
 
-  static Future<_AtvPairingSession> create(String ip) async {
+  _AtvPairingSession._(this.ip, this.pairingPort, this.certPem, this.keyPem, this._keyPair);
+
+  static Future<_AtvPairingSession> create(String ip, {int pairingPort = 6467}) async {
     final keyPair = _generateRSAKeyPair();
     final certPem = _generateSelfSignedCert(keyPair);
-    final keyPem = _encodePrivateKeyToPem(keyPair.privateKey);
-    return _AtvPairingSession._(ip, certPem, keyPem, keyPair);
+    final keyPem  = _encodePrivateKeyToPem(keyPair.privateKey);
+    return _AtvPairingSession._(ip, pairingPort, certPem, keyPem, keyPair);
   }
 
   Future<bool> connect() async {
@@ -636,12 +702,10 @@ class _AtvPairingSession {
       final context = SecurityContext(withTrustedRoots: false);
       context.useCertificateChainBytes(utf8.encode(certPem));
       context.usePrivateKeyBytes(utf8.encode(keyPem));
-      _socket = await SecureSocket.connect(
-        ip, _pairingPort,
-        context: context,
-        onBadCertificate: (cert) { _serverCert = cert; return true; },
-        timeout: const Duration(seconds: 5),
-      );
+      _socket = await SecureSocket.connect(ip, pairingPort,
+          context: context,
+          onBadCertificate: (cert) { _serverCert = cert; return true; },
+          timeout: const Duration(seconds: 5));
       _socket!.listen((_) {}, onError: (_) {}, onDone: () {});
       _sendPairingRequest();
       await Future.delayed(const Duration(milliseconds: 500));
@@ -651,10 +715,6 @@ class _AtvPairingSession {
       return false;
     }
   }
-
-  // clientName: ATV protokolü için kimlik. 'AndroidTV Remote' uyumlu her string çalışır.
-  static const _clientName = 'ATV Remote';
-  static const _clientId = 'com.mibox.remote';
 
   void _sendPairingRequest() {
     final inner = _ProtoWriter()
@@ -667,24 +727,23 @@ class _AtvPairingSession {
   Future<bool> sendPin(String pin) async {
     if (_serverCert == null) return false;
     try {
-      final serverDer = _serverCert!.der;
+      final serverDer     = _serverCert!.der;
       final serverModulus = _extractModulusFromDer(serverDer);
-      final serverExponent = _extractExponentFromDer(serverDer);
+      final serverExp     = _extractExponentFromDer(serverDer);
       final clientModulus = _bigIntToBytes(_keyPair.publicKey.modulus!);
-      final clientExponent = _bigIntToBytes(_keyPair.publicKey.exponent!);
-      final pinBytes = _hexToBytes(pin.substring(4, 6));
+      final clientExp     = _bigIntToBytes(_keyPair.publicKey.exponent!);
+      final pinBytes      = _hexToBytes(pin.substring(4, 6));
 
       final sha256 = pc.SHA256Digest();
       sha256.update(clientModulus, 0, clientModulus.length);
-      sha256.update(clientExponent, 0, clientExponent.length);
+      sha256.update(clientExp, 0, clientExp.length);
       sha256.update(serverModulus, 0, serverModulus.length);
-      sha256.update(serverExponent, 0, serverExponent.length);
+      sha256.update(serverExp, 0, serverExp.length);
       sha256.update(pinBytes, 0, pinBytes.length);
       final secret = Uint8List(32);
       sha256.doFinal(secret, 0);
 
-      final pinFirstByte = int.parse(pin.substring(0, 2), radix: 16);
-      if (secret[0] != pinFirstByte) return false;
+      if (secret[0] != int.parse(pin.substring(0, 2), radix: 16)) return false;
 
       final inner = _ProtoWriter()..writeBytes(1, secret);
       final outer = _ProtoWriter()..writeBytes(11, inner.toBytes());
@@ -741,16 +800,13 @@ class _AtvPairingSession {
     tbsCert.add(validity);
     tbsCert.add(_buildName(_clientId));
     tbsCert.add(_buildPublicKeyInfo(keyPair.publicKey));
-
     final signer = pc.RSASigner(pc.SHA256Digest(), '0609608648016503040201')
       ..init(true, pc.PrivateKeyParameter<pc.RSAPrivateKey>(keyPair.privateKey));
     final sig = signer.generateSignature(tbsCert.encodedBytes) as pc.RSASignature;
-
     final cert = asn1.ASN1Sequence();
     cert.add(tbsCert);
     cert.add(sigAlg);
     cert.add(asn1.ASN1BitString(Uint8List.fromList([0, ...sig.bytes])));
-
     final b64 = base64.encode(cert.encodedBytes);
     final lines = ['-----BEGIN CERTIFICATE-----'];
     for (var i = 0; i < b64.length; i += 64) {
@@ -830,19 +886,11 @@ class _AtvPairingSession {
     } catch (_) { return Uint8List(0); }
   }
 
-  /// asn1lib 1.6.5'te ASN1Integer.integer getter kaldırıldı,
-  /// valueBytes ise method (property değil). En stabil yol:
-  /// encodedBytes'tan TLV header'ı manuel skip ederek value okuma.
-  /// DER format: 0x02 [length] [value bytes]
   static BigInt _asn1IntToBigInt(asn1.ASN1Integer node) {
     final encoded = node.encodedBytes;
-    var offset = 1; // tag byte'ını atla (0x02)
-    // Length: 0x80'den büyükse çok-byte length encoding
+    var offset = 1;
     final lenByte = encoded[offset++];
-    if (lenByte > 0x80) {
-      offset += lenByte - 0x80;
-    }
-    // Pozitif sayı işaret byte'ı (0x00) varsa atla
+    if (lenByte > 0x80) offset += lenByte - 0x80;
     if (offset < encoded.length && encoded[offset] == 0x00) offset++;
     var result = BigInt.zero;
     for (var i = offset; i < encoded.length; i++) {
@@ -871,30 +919,18 @@ class _AtvPairingSession {
   }
 }
 
-// ── Proto Writer ──────────────────────────────────────────────────────────────
 class _ProtoWriter {
   final List<int> _buf = [];
-
-  void writeString(int fieldNumber, String value) {
-    final bytes = utf8.encode(value);
-    _writeRawVarint((fieldNumber << 3) | 2);
-    _writeRawVarint(bytes.length);
-    _buf.addAll(bytes);
+  void writeString(int f, String v) {
+    final b = utf8.encode(v);
+    _writeRawVarint((f << 3) | 2); _writeRawVarint(b.length); _buf.addAll(b);
   }
-
-  void writeBytes(int fieldNumber, Uint8List value) {
-    _writeRawVarint((fieldNumber << 3) | 2);
-    _writeRawVarint(value.length);
-    _buf.addAll(value);
+  void writeBytes(int f, Uint8List v) {
+    _writeRawVarint((f << 3) | 2); _writeRawVarint(v.length); _buf.addAll(v);
   }
-
-  void _writeRawVarint(int value) {
-    while (value > 0x7F) {
-      _buf.add((value & 0x7F) | 0x80);
-      value >>= 7;
-    }
-    _buf.add(value & 0x7F);
+  void _writeRawVarint(int v) {
+    while (v > 0x7F) { _buf.add((v & 0x7F) | 0x80); v >>= 7; }
+    _buf.add(v & 0x7F);
   }
-
   Uint8List toBytes() => Uint8List.fromList(_buf);
 }
