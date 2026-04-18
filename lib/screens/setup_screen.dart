@@ -963,8 +963,9 @@ class _AtvPairingSession {
       final serverModulus = _extractModulusFromDer(serverDer);
       final serverExp     = _extractExponentFromDer(serverDer);
 
-      final clientModulus = CryptoUtils.rsaPublicKeyModulusToBytes(_keyPair.publicKey);
-      final clientExp     = CryptoUtils.rsaPublicKeyExponentToBytes(_keyPair.publicKey);
+      // Client key — leading zero olmadan (Java'daki removeLeadingNullBytes gibi)
+      final clientModulus = _bigIntToUint8List(_keyPair.publicKey.modulus!);
+      final clientExp     = _bigIntToUint8List(_keyPair.publicKey.exponent!);
       // PIN: ilk 2 char = checkByte, kalan 4 char = hash input (2 byte)
       final checkByte   = int.parse(pin.substring(0, 2), radix: 16);
       final pinHashPart = _hexToBytes(pin.substring(2)); // son 4 hex char = 2 byte
