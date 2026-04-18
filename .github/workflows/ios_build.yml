@@ -16,18 +16,30 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.0'
+          flutter-version: '3.27.4'
           channel: 'stable'
 
       - name: Flutter pub get
         run: flutter pub get
 
+      - name: Xcode code signing kapat (proje dosyasında)
+        run: |
+          # pbxproj içinde CODE_SIGNING_REQUIRED ve DEVELOPMENT_TEAM'i patch et
+          PBXPROJ="ios/Runner.xcodeproj/project.pbxproj"
+          sed -i '' \
+            -e 's/CODE_SIGN_IDENTITY = ".*"/CODE_SIGN_IDENTITY = ""/g' \
+            -e 's/CODE_SIGNING_REQUIRED = YES/CODE_SIGNING_REQUIRED = NO/g' \
+            -e 's/DEVELOPMENT_TEAM = [A-Z0-9]*;/DEVELOPMENT_TEAM = "";/g' \
+            -e 's/PROVISIONING_PROFILE_SPECIFIER = ".*"/PROVISIONING_PROFILE_SPECIFIER = ""/g' \
+            "$PBXPROJ"
+          echo "pbxproj patch tamam"
+
       - name: Build unsigned IPA
         run: |
-          # 1. Flutter build (hata varsa burada görünür)
+          # 1. Flutter build
           flutter build ios --release --no-codesign --verbose || { echo "FLUTTER BUILD FAILED"; exit 1; }
 
-          # 2. xcodebuild archive — hatanın tam yerini loglar
+          # 2. xcodebuild archive
           xcodebuild archive \
             -workspace ios/Runner.xcworkspace \
             -scheme Runner \
@@ -36,6 +48,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
             PROVISIONING_PROFILE_SPECIFIER="" \
             -verbose || { echo "XCODEBUILD FAILED"; exit 1; }
 
