@@ -209,8 +209,6 @@ class _SetupScreenState extends State<SetupScreen> {
 
     if (cert.isNotEmpty && key.isNotEmpty) {
       await prefs.setString('atv_cert_${device.ip}', cert);
-        _log('cert hash=' + _session!.certPem.hashCode.toString() + ' lines=' + _session!.certPem.split('\n').length.toString());
-        _log('cert[0]: ' + _session!.certPem.split('\n').first);
       await prefs.setString('atv_key_${device.ip}', key);
     }
 
@@ -622,6 +620,7 @@ class _PairingScreenState extends State<PairingScreen> {
       if (ok) {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('atv_cert_${widget.ip}', _session!.certPem);
+        _log('cert kaydedildi: hash=' + _session!.certPem.hashCode.toString() + ' lines=' + _session!.certPem.split('\n').length.toString());
         await prefs.setString('atv_key_${widget.ip}', _session!.keyPem);
         if (mounted) Navigator.pop(context, true);
       } else {
