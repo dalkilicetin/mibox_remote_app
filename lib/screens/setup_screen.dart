@@ -779,8 +779,10 @@ class _AtvPairingSession {
       rsaPrivate,
       rsaPublic,
     );
+    // notBefore: 1 gün öncesi — clock drift sorununu önler
     final certPem = X509Utils.generateSelfSignedCertificate(
       rsaPrivate, csrPem, 3650,
+      notBefore: DateTime.now().subtract(const Duration(days: 1)),
     );
     final keyPem = CryptoUtils.encodeRSAPrivateKeyToPem(rsaPrivate);
 
