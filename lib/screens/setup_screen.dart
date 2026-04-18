@@ -872,37 +872,43 @@ class _AtvPairingSession {
         onTimeout: () => throw TimeoutException('No response'));
   }
 
+  // ATV Remote Protocol v2 — her mesaj: protocol_version=2, status=200(OK), payload
+  Uint8List _buildMessage(void Function(_ProtoWriter) buildPayload) {
+    final msg = _ProtoWriter()
+      ..writeVarint(1, 2)    // protocol_version = 2
+      ..writeVarint(2, 200); // status = STATUS_OK
+    buildPayload(msg);
+    return msg.toBytes();
+  }
+
   void _sendPairingRequest() {
-    // field 10 = pairing_request { field1=service_name, field2=client_name }
+    // pairing_request = field 10
     final inner = _ProtoWriter()
-      ..writeString(1, _clientName)
-      ..writeString(2, _clientId);
-    final outer = _ProtoWriter()..writeBytes(10, inner.toBytes());
-    _sendMessage(outer.toBytes());
+      ..writeString(1, _clientName)   // service_name
+      ..writeString(2, _clientId);    // client_name
+    _sendMessage(_buildMessage((m) => m.writeBytes(10, inner.toBytes())));
   }
 
   void _sendOptions() {
-    // field 20 = options { input_encodings { type=3(HEX) symbol_length=6 } preferred_role=1(INPUT) }
+    // options = field 20: input_encodings { type=3(HEX) length=6 } preferred_role=1(INPUT)
     final encoding = _ProtoWriter()
-      ..writeVarint(1, 3)   // ENCODING_TYPE_HEXADECIMAL
-      ..writeVarint(2, 6);  // symbol_length
+      ..writeVarint(1, 3)  // ENCODING_TYPE_HEXADECIMAL
+      ..writeVarint(2, 6); // symbol_length
     final inner = _ProtoWriter()
-      ..writeBytes(1, encoding.toBytes())  // input_encodings
-      ..writeVarint(2, 1);                 // preferred_role = ROLE_TYPE_INPUT
-    final outer = _ProtoWriter()..writeBytes(20, inner.toBytes());
-    _sendMessage(outer.toBytes());
+      ..writeBytes(1, encoding.toBytes())
+      ..writeVarint(2, 1); // ROLE_TYPE_INPUT
+    _sendMessage(_buildMessage((m) => m.writeBytes(20, inner.toBytes())));
   }
 
   void _sendConfiguration() {
-    // field 30 = configuration { encoding { type=3 symbol_length=6 } client_role=1 }
+    // configuration = field 30: encoding { type=3 length=6 } client_role=1
     final encoding = _ProtoWriter()
       ..writeVarint(1, 3)
       ..writeVarint(2, 6);
     final inner = _ProtoWriter()
       ..writeBytes(1, encoding.toBytes())
-      ..writeVarint(2, 1);  // client_role = ROLE_TYPE_INPUT
-    final outer = _ProtoWriter()..writeBytes(30, inner.toBytes());
-    _sendMessage(outer.toBytes());
+      ..writeVarint(2, 1); // ROLE_TYPE_INPUT
+    _sendMessage(_buildMessage((m) => m.writeBytes(30, inner.toBytes())));
   }
 
   Future<bool> sendPin(String pin) async {
@@ -940,10 +946,9 @@ class _AtvPairingSession {
         return false;
       }
 
-      // field 40 = secret { secret=... }
-      final inner = _ProtoWriter()..writeBytes(1, secret);
-      final outer = _ProtoWriter()..writeBytes(40, inner.toBytes());
-      _sendMessage(outer.toBytes());
+      // secret = field 40
+      final secretInner = _ProtoWriter()..writeBytes(1, secret);
+      _sendMessage(_buildMessage((m) => m.writeBytes(40, secretInner.toBytes())));
 
       // secret_ack bekle
       await _readMessage(timeoutMs: 3000);
