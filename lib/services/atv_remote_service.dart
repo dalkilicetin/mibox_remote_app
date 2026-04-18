@@ -49,10 +49,57 @@ class AtvRemoteService {
       _log('Sertifika yok — pairing gerekli');
       return false;
     }
+    // TEST: Python'ın ürettiği sertifika — çalışıp çalışmadığını test et
+    const _testCert = '''-----BEGIN CERTIFICATE-----
+MIIC0DCCAbigAwIBAgICA+gwDQYJKoZIhvcNAQELBQAwFTETMBEGA1UEAwwKVGVz
+dFJlbW90ZTAeFw0yNjA0MTgxNjM0MTBaFw0zNjA0MTUxNjM0MTBaMBUxEzARBgNV
+BAMMClRlc3RSZW1vdGUwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCL
+W9aA9g4mRn1sAEyQQeroteINgNNBJl9BCfZ8sB5+3/B3wiOn8fM7Kq5QK7kelSFH
+UZc4D1PRMdnFvXGlHfvyiDVud5pU1BP9N6ProFC+SsU7OcHeF19VMjdBReHvXE0A
+/wUOPivfRSetZPILJefUbAkjF2fF4CVixTIMY+zFVwAkLZmkXiNuFHlOvlXo9QHt
+4geD86iZt1kmfOJtNdee+2l6uORl3fZaXn8e581Yg82l5zk9w65aTEjC1mW5CZLc
+cGwkCFEWNTc24++j4srjm7YsZ3ZUvcWhHMF5MnMV/CNH2TNdiPKi6lVTudDNGgkw
+pAA96G8/fLk9jxXCmAIRAgMBAAGjKjAoMA8GA1UdEwQIMAYBAf8CAQAwFQYDVR0R
+BA4wDIIKVGVzdFJlbW90ZTANBgkqhkiG9w0BAQsFAAOCAQEAgFQUYNVxq55rRRV5
+6MsnE9ItOO6gIisnCHNTKCTXQnNVWCGTJRy8xq3267DIDAZ5h7st9ETiw6oLBKSX
+VQrAHYu5vMUlmGRoWEo74bSC6LFH7JT1VWRrnrJIcX48JnEwk9T4jgtX8+FNRcih
+KdM01s5wLBEy1nf9PYR1s+o0eWZn08A5WNtEeVYaEdhXe8DecyKbdlPohVWYhgL6
++vbuCSuk9etIfwyat7+PUB4kbXauYmR9xH/IkjMrhx6e7+dluUtAO8sAL2CApxSq
+DJ7Y/p865fcPgcS0LVEdUOVPReQZZNadQHpcS+NKjpfhDHxsKBjkRlGRG/DME1yg
+Jcik2w==
+-----END CERTIFICATE-----''';
+    const _testKey = '''-----BEGIN RSA PRIVATE KEY-----
+MIIEogIBAAKCAQEAi1vWgPYOJkZ9bABMkEHq6LXiDYDTQSZfQQn2fLAeft/wd8Ij
+p/HzOyquUCu5HpUhR1GXOA9T0THZxb1xpR378og1bneaVNQT/Tej66BQvkrFOznB
+3hdfVTI3QUXh71xNAP8FDj4r30UnrWTyCyXn1GwJIxdnxeAlYsUyDGPsxVcAJC2Z
+pF4jbhR5Tr5V6PUB7eIHg/OombdZJnzibTXXnvtperjkZd32Wl5/HufNWIPNpec5
+PcOuWkxIwtZluQmS3HBsJAhRFjU3NuPvo+LK45u2LGd2VL3FoRzBeTJzFfwjR9kz
+XYjyoupVU7nQzRoJMKQAPehvP3y5PY8VwpgCEQIDAQABAoIBAArAVqkY3T3CivBp
+3n5I+PFOqkZd6w5tQi808FAC0Lt7leRQtT+tTiqr+opDW/MPe3jdLdQx9Ia2DfBw
+PY6zpJQmbNmH/yoDuZi7x0Oerj6xazbMQtgaSAJ9ObTpX2AAKDhcibHlWyz3Zh39
+uiG2NoTqzSf9/oV41ebhQqD2QED3fey9uF2+i/e+U5xOT0Yg+rtWtiaxwWgjEP2s
+teVczUtyLitL2XCKCA64mqryeXmJEWD6MbKiRWa0LsNa3YXeZFV2jYe4q41I47nf
+Cn9pNMXRSnJi2LDJzrGb+ln51wglZCQEa0VPtTa2x+08Du/+Ui/RKyXXD3Cm9EnU
+FLewMHUCgYEAv9jXL3Y4nek/DAgcHO7upUu50l6JDA3Gs47BNzyiXU+eD+31hQrZ
+aWE5Kqog62tdEU3ggtesUa3XccMKjhvglvjxEAcDNoDM/6iHvyCjx36B8zyNt1tx
+cfVjd0PbKRcP+RTNnXgfsHhmvzgV0v4smn7lUFxWV46R5noruabBx6UCgYEAufW2
+HMYoK0PiFoppuLhkkeQFBNGBx2y/cEth4tKABu++NinW/j2MEitReEaX3bxuwo1s
+KFv1Ph5T8pIYaZ3UwF6bUDNwlyDPAPljE/ABlUGc3kgtEM0UXvDOiUb0mSn58X8A
+xPn9bpUyMUCXETxZ9RTsbkDKZv7XV2WCnUVwpP0CgYBzN0gsoeRouc76a9hua/R4
+4xyrQckuqwtdhOt3P/wG7CzyRigAib5+cjxB6kCxAh63qLyf9+TufOf503gAVq+w
+G7uys3NzhTEYjV9RIsoZollq+j/mEY31MblVxDPX3pjiL2M5Ig5uDjEuwAEjYTDq
+bDFN7NaR6Paoo1ClQ4f3XQKBgCsnAaObuCaSEhz48Z+T6oKQTznXBC6q5aHBXG2u
+O1dgutsGyoUk8yQkOTuX5hXmbC1pc/fJnxdTIlff3xpjLcOWMKRjy3TGgELRnFQ8
+FaH1H9nVFeAYNunxJ3xjos8IFqAbwKn0+QJ4TLVxL50oTBe7S0Iqds1/xajaPX0R
+aBphAoGANtAo+OeABWmZpjliuDNH38wsAg0bfOCABwHA9JL5T2RoTMds4kGhG1qb
+NYBMJpTGZ2ZuDw63EeMIQC9Qjfmzo1gor2btC7JzovxvOCADHmZFzuiwnt0iHN+9
+YK9yDt+rcQk7TJSAHwwPwr5vgiheNwgnXyAsyCUfMBZZ7KbqJvg=
+-----END RSA PRIVATE KEY-----''';
+
     try {
       final ctx = SecurityContext(withTrustedRoots: false);
-      ctx.useCertificateChainBytes(utf8.encode(_certPem));
-      ctx.usePrivateKeyBytes(utf8.encode(_keyPem));
+      ctx.useCertificateChainBytes(utf8.encode(_testCert));
+      ctx.usePrivateKeyBytes(utf8.encode(_testKey));
 
       _socket = await SecureSocket.connect(
         ip, _remotePort,
@@ -135,28 +182,26 @@ class AtvRemoteService {
   }
 
   void _sendConfigure() {
-    // RemoteConfigure { code1=1: 622, device_info=2: { model, vendor, ... } }
+    // Python referans: code1=615, device_info { unknown1=1, unknown2="1", package_name, app_version }
+    // model ve vendor gönderilmiyor — Python implementasyonuyla birebir
     final info = _ProtoWriter()
-      ..writeString(1, 'iPhone')           // model
-      ..writeString(2, 'Apple')            // vendor
-      ..writeVarint(3, 1)
-      ..writeString(4, '1.0.0')
+      ..writeVarint(3, 1)                  // unknown1
+      ..writeString(4, '1')                // unknown2
       ..writeString(5, 'com.mibox.remote') // package_name
       ..writeString(6, '1.0.0');           // app_version
 
     final cfg = _ProtoWriter()
-      ..writeVarint(1, 622)               // code1
-      ..writeBytes(2, info.toBytes());    // device_info
+      ..writeVarint(1, 615)
+      ..writeBytes(2, info.toBytes());
 
-    // RemoteMessage { remote_configure=1: cfg }
     final msg = _ProtoWriter()..writeBytes(1, cfg.toBytes());
     _sendMessage(msg.toBytes());
-    _log('→ configure gönderildi');
+    _log('→ configure gönderildi (code1=615)');
   }
 
   void _sendSetActive() {
     // RemoteSetActive { active=1: 1 }
-    final active = _ProtoWriter()..writeVarint(1, 1);
+    final active = _ProtoWriter()..writeVarint(1, 615);
     // RemoteMessage { remote_set_active=2: active }
     final msg = _ProtoWriter()..writeBytes(2, active.toBytes());
     _sendMessage(msg.toBytes());
