@@ -50,6 +50,7 @@ class AtvRemoteService {
       );
 
       _connected = true;
+      _connectedAt = DateTime.now();
       _connCtrl.add(true);
       print('[ATV] Bağlandı: $ip:$_remotePort');
 
@@ -209,11 +210,16 @@ class AtvRemoteService {
     }
   }
 
+  DateTime? _connectedAt;
+
   void _onDisconnect() {
+    final uptime = _connectedAt != null
+        ? DateTime.now().difference(_connectedAt!).inMilliseconds
+        : -1;
+    print('[ATV] Bağlantı kesildi — uptime: ${uptime}ms');
     _connected = false;
     _pingTimer?.cancel();
     _connCtrl.add(false);
-    print('[ATV] Bağlantı kesildi — 4 sn sonra yeniden denenecek');
     _reconnectTimer?.cancel();
     _reconnectTimer = Timer(const Duration(seconds: 4), () {
       if (!_connected && _ip.isNotEmpty) connect(_ip, remotePort: _remotePort);

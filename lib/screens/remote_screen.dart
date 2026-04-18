@@ -47,7 +47,11 @@ class _RemoteScreenState extends State<RemoteScreen>
     }
 
     _atv.connectionStream.listen((connected) {
-      if (mounted) setState(() => _atvConnected = connected);
+      print('[ATV-UI] stream event: connected=$connected, mounted=$mounted');
+      if (mounted) setState(() {
+        _atvConnected = connected;
+        _addLog('Stream: ATV ${connected ? "BAĞLANDI ✓" : "KESİLDİ ✗"}');
+      });
     });
 
     _initAtv();
@@ -68,9 +72,21 @@ class _RemoteScreenState extends State<RemoteScreen>
         return;
       }
       _addLog('Sertifika bulundu (${cert.length}b), bağlanılıyor...');
+      _addLog('cert[0]: ' + cert.split('\n').first);
+      _addLog('key[0]: ' + key.split('\n').first);
+      _addLog('certLines: \${cert.split("\n").length}');
       _atv.setCertificates(cert, key);
       final ok = await _atv.connect(widget.ip, remotePort: widget.remotePort);
       _addLog(ok ? 'ATV bağlandı ✓' : 'ATV bağlantısı başarısız!');
+      // Race condition kontrolü: connect true döndü ama stream gelmedi mi?
+      if (ok && mounted) {
+        await Future.delayed(const Duration(milliseconds: 200));
+        _addLog('200ms sonra isConnected: \${_atv.isConnected}, _atvConnected: \$_atvConnected');
+        if (_atv.isConnected && !_atvConnected) {
+          _addLog('RACE CONDITION! Manuel setState yapılıyor...');
+          setState(() => _atvConnected = true);
+        }
+      }
     } catch (e) {
       _addLog('Init hatası: $e');
       print('[ATV] Init error: $e');
