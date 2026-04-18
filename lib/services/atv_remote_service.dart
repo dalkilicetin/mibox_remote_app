@@ -4,9 +4,11 @@ import 'dart:io';
 import 'dart:typed_data';
 
 /// AndroidTV Remote Protocol v2 — port 6466, TLS
+/// Proto: remotemessage.proto
+/// RemoteMessage field 10 = remote_key_inject { key_code, direction }
+/// RemoteDirection: SHORT=3, START_LONG=1, END_LONG=2
 class AtvRemoteService {
   int _remotePort = 6466;
-
   SecureSocket? _socket;
   bool _connected = false;
   String _ip = '';
@@ -19,6 +21,9 @@ class AtvRemoteService {
   final StreamController<bool> _connCtrl = StreamController<bool>.broadcast();
   Stream<bool> get connectionStream => _connCtrl.stream;
   bool get isConnected => _connected;
+
+  // 4-byte length prefix için buffer
+  final List<int> _recvBuf = [];
 
   void setCertificates(String cert, String key) {
     _certPem = cert;
@@ -54,6 +59,7 @@ class AtvRemoteService {
         onDone:  ()  => _onDisconnect(),
       );
 
+      // Ping her 5 sn
       _pingTimer = Timer.periodic(const Duration(seconds: 5), (_) => _sendPing());
       return true;
     } catch (e) {
@@ -65,70 +71,103 @@ class AtvRemoteService {
   }
 
   void _onData(List<int> data) {
-    // TV'den gelen pong / status mesajları — şimdilik yoksay
+    _recvBuf.addAll(data);
+    // 4-byte length prefix parse
+    while (_recvBuf.length >= 4) {
+      final len = ByteData.sublistView(Uint8List.fromList(_recvBuf.sublist(0, 4)))
+          .getUint32(0, Endian.big);
+      if (_recvBuf.length < 4 + len) break;
+      final msg = _recvBuf.sublist(4, 4 + len);
+      _recvBuf.removeRange(0, 4 + len);
+      _handleMessage(msg);
+    }
   }
 
-  void _onDisconnect() {
-    _connected = false;
-    _pingTimer?.cancel();
-    _connCtrl.add(false);
-    print('[ATV] Bağlantı kesildi — 4 sn sonra yeniden denenecek');
-    _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(const Duration(seconds: 4), () {
-      if (!_connected && _ip.isNotEmpty) connect(_ip);
-    });
+  void _handleMessage(List<int> msg) {
+    if (msg.isEmpty) return;
+    print('[ATV] ← msg(${msg.length}b): ${msg.take(16).toList()}');
+
+    // field 1 = remote_configure — TV bağlantıda config gönderir, biz de respond ederiz
+    if (msg[0] == 0x0A) {
+      _sendConfigure();
+      // Ardından set_active gönder
+      Future.delayed(const Duration(milliseconds: 100), _sendSetActive);
+    }
+    // field 9 = ping_request — pong gönder
+    else if (msg[0] == 0x4A) {
+      _sendPong(msg);
+    }
   }
 
+  // RemoteMessage { remote_configure=1: { code1=1: 622 (0x26E), device_info=2: {...} } }
+  void _sendConfigure() {
+    // Aymkdn doc'tan exact bytes: [10,34,8,238,4,18,29,24,1,34,1,49,42,15,androidtv-remote,50,5,1.0.0]
+    const pkg = [97,110,100,114,111,105,100,116,118,45,114,101,109,111,116,101]; // androidtv-remote
+    const ver = [49,46,48,46,48]; // 1.0.0
+    // sub = device_info: {unknown1=3: 1, unknown2=4: "1", package_name=5: pkg, app_version=6: ver}
+    final sub = <int>[24,1, 34,1,49, 42,pkg.length,...pkg, 50,ver.length,...ver];
+    final payload = <int>[10, sub.length+2, 8,238,4, 18,sub.length, ...sub];
+    _sendMessage(Uint8List.fromList(payload));
+    print('[ATV] → configure gönderildi');
+  }
+
+  // RemoteMessage { remote_set_active=2: { active=1: 622 } }
+  void _sendSetActive() {
+    // [18,3,8,238,4]
+    _sendMessage(Uint8List.fromList([18, 3, 8, 238, 4]));
+    print('[ATV] → set_active gönderildi');
+  }
+
+  // Pong: RemoteMessage { remote_ping_response=9: { val1: same as request } }
+  void _sendPong(List<int> pingMsg) {
+    // field 9 = 0x4A, ping_response field 9 = 0x4A
+    // basit: gelen val1'i geri yansıt
+    _sendMessage(Uint8List.fromList([0x4A, 0x02, 0x08, 0x00]));
+  }
+
+  // Ping: RemoteMessage { remote_ping_request=8: { val1: 1 } }
   void _sendPing() {
     if (!_connected) return;
     try {
-      _sendMessage(Uint8List.fromList([0x08, 0x00]));
+      _sendMessage(Uint8List.fromList([0x42, 0x02, 0x08, 0x00]));
     } catch (_) {
       _onDisconnect();
     }
   }
 
-  // ── Tuş komutları ──────────────────────────────────────────────────────
+  // ── Tuş komutları ──────────────────────────────────────────────────────────
+  // RemoteMessage field 10 = remote_key_inject { key_code=1, direction=2 }
+  // RemoteDirection: SHORT=3, START_LONG=1, END_LONG=2
 
   void sendKey(int keyCode, {bool longPress = false}) {
     if (!_connected) return;
-    _sendKeyAction(keyCode, 1); // DOWN
-    Future.delayed(Duration(milliseconds: longPress ? 600 : 80), () {
-      _sendKeyAction(keyCode, 2); // UP
-    });
+    if (longPress) {
+      _sendKeyDirection(keyCode, 1); // START_LONG
+      Future.delayed(const Duration(milliseconds: 600), () {
+        _sendKeyDirection(keyCode, 2); // END_LONG
+      });
+    } else {
+      _sendKeyDirection(keyCode, 3); // SHORT — tek seferlik
+    }
   }
 
-  void _sendKeyAction(int keyCode, int action) {
-    // RemoteMessage protobuf: field 4 = key_event { field 1 = keycode, field 2 = action }
+  void _sendKeyDirection(int keyCode, int direction) {
+    // RemoteMessage { remote_key_inject=10: { key_code=1: keyCode, direction=2: direction } }
     final inner = _ProtoWriter()
-      ..writeVarint(1, keyCode)
-      ..writeVarint(2, action);
-    final outer = _ProtoWriter()..writeBytes(4, inner.toBytes());
+      ..writeVarint(1, keyCode)    // key_code
+      ..writeVarint(2, direction); // direction
+    final outer = _ProtoWriter()..writeBytes(10, inner.toBytes()); // field 10
     _sendMessage(outer.toBytes());
   }
 
-  // ── Mouse / tap (ATV Remote protokolü mouse event destekliyor) ──────────
-
-  /// Rölatif mouse hareketi gönderir.
-  /// field 5 = mouse_event { field 1 = x_delta, field 2 = y_delta }
-  void sendMouseMove(int dx, int dy) {
-    if (!_connected) return;
-    final inner = _ProtoWriter()
-      ..writeVarintSigned(1, dx)
-      ..writeVarintSigned(2, dy);
-    final outer = _ProtoWriter()..writeBytes(5, inner.toBytes());
-    _sendMessage(outer.toBytes());
-  }
-
-  /// Tek tıklama: DPAD_CENTER DOWN + UP
+  /// SHORT tıklama
   void sendClick() => sendKey(AtvKey.dpadCenter);
 
-  /// Uzun basma: DPAD_CENTER long press
+  /// Uzun basma
   void sendLongClick() => sendKey(AtvKey.dpadCenter, longPress: true);
 
-  // ── Düşük seviye ────────────────────────────────────────────────────────
-
-  /// Format: [4-byte big-endian length][payload]
+  // ── Düşük seviye ────────────────────────────────────────────────────────────
+  // Format: [4-byte big-endian length][payload]
   void _sendMessage(Uint8List payload) {
     if (_socket == null || !_connected) return;
     try {
@@ -141,6 +180,17 @@ class AtvRemoteService {
     }
   }
 
+  void _onDisconnect() {
+    _connected = false;
+    _pingTimer?.cancel();
+    _connCtrl.add(false);
+    print('[ATV] Bağlantı kesildi — 4 sn sonra yeniden denenecek');
+    _reconnectTimer?.cancel();
+    _reconnectTimer = Timer(const Duration(seconds: 4), () {
+      if (!_connected && _ip.isNotEmpty) connect(_ip, remotePort: _remotePort);
+    });
+  }
+
   void dispose() {
     _reconnectTimer?.cancel();
     _pingTimer?.cancel();
@@ -150,20 +200,13 @@ class AtvRemoteService {
   }
 }
 
-// ── Protobuf yazar ───────────────────────────────────────────────────────────
+// ── Protobuf yazar ─────────────────────────────────────────────────────────────
 class _ProtoWriter {
   final List<int> _buf = [];
 
   void writeVarint(int field, int value) {
     _writeRawVarint((field << 3) | 0);
     _writeRawVarint(value);
-  }
-
-  /// Zigzag encode — signed int için (mouse delta)
-  void writeVarintSigned(int field, int value) {
-    _writeRawVarint((field << 3) | 0);
-    final zigzag = (value << 1) ^ (value >> 31);
-    _writeRawVarint(zigzag);
   }
 
   void writeBytes(int field, Uint8List value) {
@@ -173,7 +216,7 @@ class _ProtoWriter {
   }
 
   void _writeRawVarint(int v) {
-    v = v & 0xFFFFFFFF; // 32-bit sınır
+    v = v & 0xFFFFFFFF;
     while (v > 0x7F) {
       _buf.add((v & 0x7F) | 0x80);
       v >>= 7;
@@ -184,7 +227,7 @@ class _ProtoWriter {
   Uint8List toBytes() => Uint8List.fromList(_buf);
 }
 
-// ── Android KeyEvent sabitleri ───────────────────────────────────────────────
+// ── Android KeyEvent sabitleri ─────────────────────────────────────────────────
 class AtvKey {
   static const int volumeUp   = 24;
   static const int volumeDown = 25;
@@ -205,4 +248,5 @@ class AtvKey {
   static const int del        = 67;
   static const int tab        = 61;
   static const int search     = 84;
+  static const int settings   = 176;
 }
