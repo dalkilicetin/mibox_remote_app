@@ -87,6 +87,11 @@ class _RemoteScreenState extends State<RemoteScreen>
       final savedHash = cert.hashCode;
       _addLog('Remote cert hash: $savedHash (${cert.split("\n").length} satır)');
       _addLog('Remote key[0]: ${key.split("\n").first}');
+      // Tutarlılık kontrolü — pairing logu ile karşılaştır
+      final c20 = cert.replaceAll('\n','');
+      final k20 = key.replaceAll('\n','');
+      _addLog('REMOTE cert[0:20]: ' + (c20.length > 20 ? c20.substring(0,20) : c20));
+      _addLog('REMOTE key[0:20]: ' + (k20.length > 20 ? k20.substring(0,20) : k20));
       _atv.setCertificates(cert, key);
       final ok = await _atv.connect(widget.ip, remotePort: widget.remotePort);
       _addLog(ok ? 'ATV bağlandı ✓' : 'ATV bağlantısı başarısız!');
@@ -110,9 +115,9 @@ class _RemoteScreenState extends State<RemoteScreen>
     print('[ATV-UI] $msg');
     // Log dosyasına yaz — adb pull /sdcard/Download/atv_remote.log
     try {
-      _logSink ??= File('/sdcard/Download/atv_remote.log')
+      _logSink ??= File('/data/local/tmp/atv_remote.log')
           .openWrite(mode: FileMode.writeOnly)
-          ..writeln('=== ATV Remote Log ${DateTime.now()} ===');
+          ..writeln('=== ATV Remote Log \${DateTime.now()} ===');
       _logSink!.writeln(line);
     } catch (_) {}
     if (mounted) setState(() {

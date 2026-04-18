@@ -558,13 +558,19 @@ class _PairingScreenState extends State<PairingScreen> {
   IOSink? _logSink;
 
   Future<void> _initLogFile() async {
-    try {
-      // Android: /sdcard/Download/atv_pairing.log — adb pull ile alınır
-      final f = File('/sdcard/Download/atv_pairing.log');
-      _logSink = f.openWrite(mode: FileMode.writeOnly);
-      _logSink!.writeln('=== ATV Pairing Log ${DateTime.now()} ===');
-    } catch (e) {
-      print('[PAIR] Log dosyası açılamadı: $e');
+    // /data/local/tmp/ — adb pull çalışır, WRITE_EXTERNAL_STORAGE izni gerekmez
+    // Komut: adb pull /data/local/tmp/atv_pairing.log
+    for (final path in [
+      '/data/local/tmp/atv_pairing.log',
+      '/data/local/tmp/atv_pairing_${DateTime.now().millisecondsSinceEpoch}.log',
+    ]) {
+      try {
+        final f = File(path);
+        _logSink = f.openWrite(mode: FileMode.writeOnly);
+        _logSink!.writeln('=== ATV Pairing Log \${DateTime.now()} ===');
+        print('[PAIR] Log: $path');
+        break;
+      } catch (_) {}
     }
   }
 
@@ -635,10 +641,16 @@ class _PairingScreenState extends State<PairingScreen> {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('atv_cert_${widget.ip}', _session!.certPem);
         _log('cert kaydedildi: hash=' + _session!.certPem.hashCode.toString() + ' lines=' + _session!.certPem.split('\n').length.toString());
+        // Tutarlılık kontrolü: remote_screen aynı cert'i kullanacak
+        _log('PAIRING cert[0:20]: ' + _session!.certPem.replaceAll('\n','').substring(0, 20));
+        _log('PAIRING keyPkcs8[0:20]: ' + _session!.keyPemPkcs8.replaceAll('\n','').substring(0, 20));
         // PKCS#1 — ileride gerekirse diye saklanıyor
         await prefs.setString('atv_key_${widget.ip}', _session!.keyPemPkcs1);
         // PKCS#8 — SecurityContext.usePrivateKeyBytes() için (remote TLS)
         await prefs.setString('atv_key_pkcs8_${widget.ip}', _session!.keyPemPkcs8);
+        // TV'nin sertifikayı TrustedStore'una yazması için bekle
+        _log('TV kayıt bekleniyor (3s)...');
+        await Future.delayed(const Duration(seconds: 3));
         if (mounted) Navigator.pop(context, true);
       } else {
         setState(() { _pairing = false; _status = 'Yanlış kod! Tekrar deneyin:'; });
@@ -805,9 +817,11 @@ class _AtvPairingSession {
       rsaPublic,
     );
     // notBefore: 1 gün öncesi — clock drift sorununu önler
+    final notBefore = DateTime.now().subtract(const Duration(days: 1));
+    print('[PAIR] cert notBefore: $notBefore (TV saati bundan ileride olmalı)');
     final certPem = X509Utils.generateSelfSignedCertificate(
       rsaPrivate, csrPem, 3650,
-      notBefore: DateTime.now().subtract(const Duration(days: 1)),
+      notBefore: notBefore,
     );
     // PKCS#8: SecurityContext.usePrivateKeyBytes() için
     final keyPemPkcs8 = CryptoUtils.encodeRSAPrivateKeyToPem(rsaPrivate);
