@@ -59,6 +59,13 @@ class AtvRemoteService {
         onDone:  ()  { print('[ATV] Socket closed'); _onDisconnect(); },
       );
 
+      // Bağlantı kurulunca hemen configure+setActive gönder
+      // (TV'nin configure mesajını beklemeye gerek yok)
+      Future.delayed(const Duration(milliseconds: 100), () {
+        _sendConfigure();
+        Future.delayed(const Duration(milliseconds: 100), _sendSetActive);
+      });
+
       // Ping her 5 sn
       _pingTimer = Timer.periodic(const Duration(seconds: 5), (_) => _sendPing());
       return true;
@@ -111,22 +118,32 @@ class AtvRemoteService {
     }
   }
 
-  // RemoteMessage { remote_configure=1: { code1=1: 622 (0x26E), device_info=2: {...} } }
   void _sendConfigure() {
-    // Aymkdn doc'tan exact bytes: [10,34,8,238,4,18,29,24,1,34,1,49,42,15,androidtv-remote,50,5,1.0.0]
-    const pkg = [97,110,100,114,111,105,100,116,118,45,114,101,109,111,116,101]; // androidtv-remote
-    const ver = [49,46,48,46,48]; // 1.0.0
-    // sub = device_info: {unknown1=3: 1, unknown2=4: "1", package_name=5: pkg, app_version=6: ver}
-    final sub = <int>[24,1, 34,1,49, 42,pkg.length,...pkg, 50,ver.length,...ver];
-    final payload = <int>[10, sub.length+2, 8,238,4, 18,sub.length, ...sub];
-    _sendMessage(Uint8List.fromList(payload));
+    // RemoteConfigure { code1=1: 622, device_info=2: { model, vendor, ... } }
+    final info = _ProtoWriter()
+      ..writeString(1, 'iPhone')           // model
+      ..writeString(2, 'Apple')            // vendor
+      ..writeVarint(3, 1)
+      ..writeString(4, '1.0.0')
+      ..writeString(5, 'com.mibox.remote') // package_name
+      ..writeString(6, '1.0.0');           // app_version
+
+    final cfg = _ProtoWriter()
+      ..writeVarint(1, 622)               // code1
+      ..writeBytes(2, info.toBytes());    // device_info
+
+    // RemoteMessage { remote_configure=1: cfg }
+    final msg = _ProtoWriter()..writeBytes(1, cfg.toBytes());
+    _sendMessage(msg.toBytes());
     print('[ATV] → configure gönderildi');
   }
 
-  // RemoteMessage { remote_set_active=2: { active=1: 622 } }
   void _sendSetActive() {
-    // [18,3,8,238,4]
-    _sendMessage(Uint8List.fromList([18, 3, 8, 238, 4]));
+    // RemoteSetActive { active=1: 1 }
+    final active = _ProtoWriter()..writeVarint(1, 1);
+    // RemoteMessage { remote_set_active=2: active }
+    final msg = _ProtoWriter()..writeBytes(2, active.toBytes());
+    _sendMessage(msg.toBytes());
     print('[ATV] → set_active gönderildi');
   }
 
@@ -219,6 +236,13 @@ class _ProtoWriter {
   void writeVarint(int field, int value) {
     _writeRawVarint((field << 3) | 0);
     _writeRawVarint(value);
+  }
+
+  void writeString(int field, String value) {
+    final bytes = utf8.encode(value);
+    _writeRawVarint((field << 3) | 2);
+    _writeRawVarint(bytes.length);
+    _buf.addAll(bytes);
   }
 
   void writeBytes(int field, Uint8List value) {
