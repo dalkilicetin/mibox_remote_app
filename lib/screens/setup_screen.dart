@@ -6,7 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:pointycastle/export.dart' as pc;
-import 'package:asn1lib/asn1lib.dart' as asn1;
+import 'package:basic_utils/basic_utils.dart';
 import '../services/mibox_service.dart';
 import '../services/atv_remote_service.dart';
 import 'remote_screen.dart';
@@ -746,10 +746,23 @@ class _AtvPairingSession {
   _AtvPairingSession._(this.ip, this.pairingPort, this.certPem, this.keyPem, this._keyPair);
 
   static Future<_AtvPairingSession> create(String ip, {int pairingPort = 6467}) async {
-    final keyPair = _generateRSAKeyPair();
-    final certPem = _generateSelfSignedCert(keyPair);
-    final keyPem  = _encodePrivateKeyToPem(keyPair.privateKey);
-    return _AtvPairingSession._(ip, pairingPort, certPem, keyPem, keyPair);
+    // basic_utils ile doğru formatta RSA key pair + self-signed cert üret
+    final keyPair = CryptoUtils.generateRSAKeyPair(keySize: 2048);
+    final rsaPrivate = keyPair.privateKey as pc.RSAPrivateKey;
+    final rsaPublic  = keyPair.publicKey  as pc.RSAPublicKey;
+
+    final csrPem = X509Utils.generateRsaCsrPem(
+      {'CN': _clientId},
+      rsaPrivate,
+      rsaPublic,
+    );
+    final certPem = X509Utils.generateSelfSignedCertificate(
+      rsaPrivate, csrPem, 3650,
+    );
+    final keyPem = CryptoUtils.encodeRSAPrivateKeyToPem(rsaPrivate);
+
+    return _AtvPairingSession._(ip, pairingPort, certPem, keyPem,
+        pc.AsymmetricKeyPair<pc.RSAPublicKey, pc.RSAPrivateKey>(rsaPublic, rsaPrivate));
   }
 
   // null = başarılı, String = hata mesajı
@@ -903,12 +916,15 @@ class _AtvPairingSession {
       _sendConfiguration();
       await _readMessage(); // configuration_ack
 
-      // Secret hesapla
-      final serverDer     = _serverCert!.der;
-      final serverModulus = _extractModulusFromDer(serverDer);
-      final serverExp     = _extractExponentFromDer(serverDer);
-      final clientModulus = _bigIntToBytes(_keyPair.publicKey.modulus!);
-      final clientExp     = _bigIntToBytes(_keyPair.publicKey.exponent!);
+      // Secret hesapla — basic_utils ile modulus/exponent extract
+      final serverCertPem = X509Utils.encodeASN1ObjectToPem(
+          ASN1Object.fromBytes(_serverCert!.der), 'CERTIFICATE', 'CERTIFICATE');
+      final serverModulus = CryptoUtils.rsaPublicKeyModulusToBytes(
+          X509Utils.publicKeyFromX509CertificatePem(serverCertPem) as pc.RSAPublicKey);
+      final serverExp = CryptoUtils.rsaPublicKeyExponentToBytes(
+          X509Utils.publicKeyFromX509CertificatePem(serverCertPem) as pc.RSAPublicKey);
+      final clientModulus = CryptoUtils.rsaPublicKeyModulusToBytes(_keyPair.publicKey);
+      final clientExp     = CryptoUtils.rsaPublicKeyExponentToBytes(_keyPair.publicKey);
       final pinBytes      = _hexToBytes(pin.substring(4, 6));
 
       final sha256 = pc.SHA256Digest();
@@ -952,146 +968,24 @@ class _AtvPairingSession {
 
   void dispose() => _socket?.destroy();
 
-  static pc.AsymmetricKeyPair<pc.RSAPublicKey, pc.RSAPrivateKey> _generateRSAKeyPair() {
-    final secureRandom = pc.FortunaRandom();
-    final seedSource = Random.secure();
-    secureRandom.seed(pc.KeyParameter(
-        Uint8List.fromList(List.generate(32, (_) => seedSource.nextInt(256)))));
-    final keyGen = pc.RSAKeyGenerator()
-      ..init(pc.ParametersWithRandom(
-          pc.RSAKeyGeneratorParameters(BigInt.parse('65537'), 2048, 64), secureRandom));
-    final pair = keyGen.generateKeyPair();
-    return pc.AsymmetricKeyPair<pc.RSAPublicKey, pc.RSAPrivateKey>(
-        pair.publicKey as pc.RSAPublicKey, pair.privateKey as pc.RSAPrivateKey);
-  }
 
-  static String _generateSelfSignedCert(
-      pc.AsymmetricKeyPair<pc.RSAPublicKey, pc.RSAPrivateKey> keyPair) {
-    final tbsCert = asn1.ASN1Sequence();
-    final versionTag = asn1.ASN1Sequence();
-    versionTag.add(asn1.ASN1Integer(BigInt.from(2)));
-    tbsCert.add(asn1.ASN1Object.fromBytes(
-        Uint8List.fromList([0xa0, ...versionTag.encodedBytes])));
-    tbsCert.add(asn1.ASN1Integer(BigInt.from(1)));
-    final sigAlg = asn1.ASN1Sequence();
-    sigAlg.add(asn1.ASN1ObjectIdentifier.fromBytes(Uint8List.fromList(
-        [0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0b])));
-    sigAlg.add(asn1.ASN1Null());
-    tbsCert.add(sigAlg);
-    tbsCert.add(_buildName(_clientId));
-    final now = DateTime.now().toUtc();
-    final validity = asn1.ASN1Sequence();
-    validity.add(asn1.ASN1UtcTime(now));
-    validity.add(asn1.ASN1UtcTime(now.add(const Duration(days: 3650))));
-    tbsCert.add(validity);
-    tbsCert.add(_buildName(_clientId));
-    tbsCert.add(_buildPublicKeyInfo(keyPair.publicKey));
-    final signer = pc.RSASigner(pc.SHA256Digest(), '0609608648016503040201')
-      ..init(true, pc.PrivateKeyParameter<pc.RSAPrivateKey>(keyPair.privateKey));
-    final sig = signer.generateSignature(tbsCert.encodedBytes) as pc.RSASignature;
-    final cert = asn1.ASN1Sequence();
-    cert.add(tbsCert);
-    cert.add(sigAlg);
-    cert.add(asn1.ASN1BitString(Uint8List.fromList([0, ...sig.bytes])));
-    final b64 = base64.encode(cert.encodedBytes);
-    final lines = ['-----BEGIN CERTIFICATE-----'];
-    for (var i = 0; i < b64.length; i += 64) {
-      lines.add(b64.substring(i, min(i + 64, b64.length)));
-    }
     lines.add('-----END CERTIFICATE-----');
     return lines.join('\n');
   }
 
-  static asn1.ASN1Sequence _buildName(String cn) {
-    final rdnSeq = asn1.ASN1Sequence();
-    final rdn = asn1.ASN1Set();
-    final atv = asn1.ASN1Sequence();
-    atv.add(asn1.ASN1ObjectIdentifier.fromBytes(
-        Uint8List.fromList([0x06,0x03,0x55,0x04,0x03])));
-    atv.add(asn1.ASN1UTF8String(cn));
-    rdn.add(atv);
-    rdnSeq.add(rdn);
-    return rdnSeq;
-  }
 
-  static asn1.ASN1Sequence _buildPublicKeyInfo(pc.RSAPublicKey publicKey) {
-    final spki = asn1.ASN1Sequence();
-    final alg = asn1.ASN1Sequence();
-    alg.add(asn1.ASN1ObjectIdentifier.fromBytes(Uint8List.fromList(
-        [0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x01])));
-    alg.add(asn1.ASN1Null());
-    spki.add(alg);
-    final pubKeySeq = asn1.ASN1Sequence();
-    pubKeySeq.add(asn1.ASN1Integer(publicKey.modulus!));
-    pubKeySeq.add(asn1.ASN1Integer(publicKey.exponent!));
-    spki.add(asn1.ASN1BitString(Uint8List.fromList([0, ...pubKeySeq.encodedBytes])));
-    return spki;
-  }
 
-  static String _encodePrivateKeyToPem(pc.RSAPrivateKey pk) {
-    final seq = asn1.ASN1Sequence();
-    seq.add(asn1.ASN1Integer(BigInt.zero));
-    seq.add(asn1.ASN1Integer(pk.modulus!));
-    seq.add(asn1.ASN1Integer(pk.exponent!));
-    seq.add(asn1.ASN1Integer(pk.privateExponent!));
-    seq.add(asn1.ASN1Integer(pk.p!));
-    seq.add(asn1.ASN1Integer(pk.q!));
-    seq.add(asn1.ASN1Integer(pk.privateExponent! % (pk.p! - BigInt.one)));
-    seq.add(asn1.ASN1Integer(pk.privateExponent! % (pk.q! - BigInt.one)));
-    seq.add(asn1.ASN1Integer(pk.q!.modInverse(pk.p!)));
-    final b64 = base64.encode(seq.encodedBytes);
-    final lines = ['-----BEGIN RSA PRIVATE KEY-----'];
-    for (var i = 0; i < b64.length; i += 64) {
-      lines.add(b64.substring(i, min(i + 64, b64.length)));
-    }
     lines.add('-----END RSA PRIVATE KEY-----');
     return lines.join('\n');
   }
-
-  static Uint8List _extractModulusFromDer(Uint8List der) {
-    try {
-      final seq = asn1.ASN1Parser(der).nextObject() as asn1.ASN1Sequence;
-      final tbs = seq.elements![0] as asn1.ASN1Sequence;
-      final spki = tbs.elements![6] as asn1.ASN1Sequence;
-      final bitStr = spki.elements![1] as asn1.ASN1BitString;
-      final pubKeySeq = asn1.ASN1Parser(bitStr.contentBytes().sublist(1))
-          .nextObject() as asn1.ASN1Sequence;
-      return _bigIntToBytes(_asn1IntToBigInt(pubKeySeq.elements![0] as asn1.ASN1Integer));
-    } catch (_) { return Uint8List(0); }
+ catch (_) { return Uint8List(0); }
+  }
+ catch (_) { return Uint8List(0); }
   }
 
-  static Uint8List _extractExponentFromDer(Uint8List der) {
-    try {
-      final seq = asn1.ASN1Parser(der).nextObject() as asn1.ASN1Sequence;
-      final tbs = seq.elements![0] as asn1.ASN1Sequence;
-      final spki = tbs.elements![6] as asn1.ASN1Sequence;
-      final bitStr = spki.elements![1] as asn1.ASN1BitString;
-      final pubKeySeq = asn1.ASN1Parser(bitStr.contentBytes().sublist(1))
-          .nextObject() as asn1.ASN1Sequence;
-      return _bigIntToBytes(_asn1IntToBigInt(pubKeySeq.elements![1] as asn1.ASN1Integer));
-    } catch (_) { return Uint8List(0); }
-  }
-
-  static BigInt _asn1IntToBigInt(asn1.ASN1Integer node) {
-    final encoded = node.encodedBytes;
-    var offset = 1;
-    final lenByte = encoded[offset++];
-    if (lenByte > 0x80) offset += lenByte - 0x80;
-    if (offset < encoded.length && encoded[offset] == 0x00) offset++;
-    var result = BigInt.zero;
-    for (var i = offset; i < encoded.length; i++) {
-      result = (result << 8) | BigInt.from(encoded[i]);
-    }
     return result;
   }
 
-  static Uint8List _bigIntToBytes(BigInt n) {
-    var hex = n.toRadixString(16);
-    if (hex.length % 2 != 0) hex = '0$hex';
-    final bytes = Uint8List(hex.length ~/ 2);
-    for (var i = 0; i < bytes.length; i++) {
-      bytes[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
-    }
     return bytes;
   }
 

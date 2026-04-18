@@ -14,6 +14,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   pointycastle: ^3.7.3
   asn1lib: ^1.5.4
+  basic_utils: ^5.8.2
 
 dev_dependencies:
   flutter_test:
