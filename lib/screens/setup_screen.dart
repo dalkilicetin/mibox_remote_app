@@ -872,43 +872,49 @@ class _AtvPairingSession {
         onTimeout: () => throw TimeoutException('No response'));
   }
 
-  // ATV Remote Protocol v2 — her mesaj: protocol_version=2, status=200(OK), payload
-  Uint8List _buildMessage(void Function(_ProtoWriter) buildPayload) {
-    final msg = _ProtoWriter()
-      ..writeVarint(1, 2)    // protocol_version = 2
-      ..writeVarint(2, 200); // status = STATUS_OK
-    buildPayload(msg);
-    return msg.toBytes();
-  }
+  // ATV Remote Protocol v2 — referans: https://github.com/Aymkdn/assistant-freebox-cloud/wiki
+  // Her mesaj önce 4 byte big-endian length, sonra payload
+  // Tüm payload byte dizileri dokümantasyondan alınmıştır
 
   void _sendPairingRequest() {
-    // pairing_request = field 10
-    final inner = _ProtoWriter()
-      ..writeString(1, _clientName)   // service_name
-      ..writeString(2, _clientId);    // client_name
-    _sendMessage(_buildMessage((m) => m.writeBytes(10, inner.toBytes())));
+    // [8,2] = protocol_version:2, [16,200,1] = status:OK
+    // [82] = field10 LEN (pairing_request), [length], [10,length,service_name_bytes, 18,length,client_name_bytes]
+    final serviceBytes = utf8.encode(_clientName);
+    final clientBytes  = utf8.encode(_clientId);
+    final innerLen = 2 + serviceBytes.length + 2 + clientBytes.length;
+    final payload = <int>[
+      8, 2,          // protocol_version = 2
+      16, 200, 1,    // status = STATUS_OK
+      82,            // field 10 (pairing_request), wire type 2
+      innerLen,      // length of inner message
+      10, serviceBytes.length, ...serviceBytes,  // service_name
+      18, clientBytes.length,  ...clientBytes,   // client_name
+    ];
+    _sendMessage(Uint8List.fromList(payload));
   }
 
   void _sendOptions() {
-    // options = field 20: input_encodings { type=3(HEX) length=6 } preferred_role=1(INPUT)
-    final encoding = _ProtoWriter()
-      ..writeVarint(1, 3)  // ENCODING_TYPE_HEXADECIMAL
-      ..writeVarint(2, 6); // symbol_length
-    final inner = _ProtoWriter()
-      ..writeBytes(1, encoding.toBytes())
-      ..writeVarint(2, 1); // ROLE_TYPE_INPUT
-    _sendMessage(_buildMessage((m) => m.writeBytes(20, inner.toBytes())));
+    // Exact bytes from spec:
+    // [8,2,16,200,1] header + [162,1] field20 + [8] inner_len + [10,4,8,3,16,6,24,1]
+    _sendMessage(Uint8List.fromList([
+      8, 2, 16, 200, 1,   // protocol_version=2, status=OK
+      162, 1,             // field 20 (options), wire type 2 — varint encoded
+      8,                  // inner message length
+      10, 4, 8, 3, 16, 6, // input_encodings: type=HEX(3), symbol_length=6
+      24, 1,              // preferred_role = INPUT(1)
+    ]));
   }
 
   void _sendConfiguration() {
-    // configuration = field 30: encoding { type=3 length=6 } client_role=1
-    final encoding = _ProtoWriter()
-      ..writeVarint(1, 3)
-      ..writeVarint(2, 6);
-    final inner = _ProtoWriter()
-      ..writeBytes(1, encoding.toBytes())
-      ..writeVarint(2, 1); // ROLE_TYPE_INPUT
-    _sendMessage(_buildMessage((m) => m.writeBytes(30, inner.toBytes())));
+    // Exact bytes from spec:
+    // [8,2,16,200,1] header + [242,1] field30 + [8] inner_len + [10,4,8,3,16,6,16,1]
+    _sendMessage(Uint8List.fromList([
+      8, 2, 16, 200, 1,   // protocol_version=2, status=OK
+      242, 1,             // field 30 (configuration), wire type 2 — varint encoded
+      8,                  // inner message length
+      10, 4, 8, 3, 16, 6, // encoding: type=HEX(3), symbol_length=6
+      16, 1,              // client_role = INPUT(1)
+    ]));
   }
 
   Future<bool> sendPin(String pin) async {
@@ -946,9 +952,17 @@ class _AtvPairingSession {
         return false;
       }
 
-      // secret = field 40
-      final secretInner = _ProtoWriter()..writeBytes(1, secret);
-      _sendMessage(_buildMessage((m) => m.writeBytes(40, secretInner.toBytes())));
+      // Secret mesajı — dokümantasyondan exact bytes:
+      // [8,2,16,200,1] + [194,2] field32 + [34] inner_len + [10,32] + secret_bytes
+      // Toplam payload: 5 + 2 + 1 + 2 + 32 = 42 byte
+      final secretPayload = <int>[
+        8, 2, 16, 200, 1,  // protocol_version=2, status=OK
+        194, 2,            // field 32 (secret_ack wrapper), wire type 2
+        34,                // inner length = 34
+        10, 32,            // field 1 (secret), wire type 2, length 32
+        ...secret,
+      ];
+      _sendMessage(Uint8List.fromList(secretPayload));
 
       // secret_ack bekle
       await _readMessage(timeoutMs: 3000);
