@@ -71,12 +71,11 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
     _startSensors();
   }
 
+  StreamSubscription? _magSub;
+
   void _startSensors() {
     // PITCH: accelerometer'dan beta hesapla
-    // web appteki e.beta gibi - telefon dik tutulurken ileri/geri egim
     _accelSub = accelerometerEventStream().listen((event) {
-      // Beta: telefon ne kadar one/arkaya egilmis
-      // atan2(y, sqrt(x^2+z^2)) * 180/pi - beta benzeri
       final beta = math.atan2(
         event.y,
         math.sqrt(event.x * event.x + event.z * event.z)
@@ -85,8 +84,13 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
       _onGyro(_rawAlpha, _rawBeta);
     });
 
-    // YAW: compass'tan alpha (0-360 derece, web appteki alpha gibi)
-    
+    // YAW: magnetometer'dan compass açısı (0-360 derece)
+    _magSub = magnetometerEventStream().listen((event) {
+      // Compass yönü: atan2(y, x) * 180/pi, 0-360'a normalize et
+      double alpha = math.atan2(event.y, event.x) * 180 / math.pi;
+      if (alpha < 0) alpha += 360;
+      _rawAlpha = alpha;
+    });
   }
 
   // Web app'teki onGyro fonksiyonu ile BIREBIR AYNI mantik
@@ -197,9 +201,18 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
     HapticFeedback.lightImpact();
   }
 
+  void _sendTap() {
+    // Önce APK'ya tap gönder (cursor pozisyonunda tıklama)
+    widget.service.tap();
+    // ATV remote bağlıysa Enter de gönder (güvenilirlik için)
+    // Not: sadece birini kullan — APK tap çalışmıyorsa Enter dene
+    HapticFeedback.mediumImpact();
+  }
+
   @override
   void dispose() {
     _accelSub?.cancel();
+    _magSub?.cancel();
     _toggleTimer?.cancel();
     _kbdCtrl.dispose();
     super.dispose();
@@ -304,9 +317,11 @@ class _AirMouseScreenState extends State<AirMouseScreen> {
                           .inMilliseconds;
                       if (moved < TAP_MAX_MOVE && elapsed < TAP_MAX_MS) {
                         if (_airOn) {
+                          // Hem APK tap hem ATV Enter — hangisi çalışırsa
                           widget.service.tap();
+                          if (widget.atv.isConnected) widget.atv.sendKey(23);
                         } else {
-                          widget.service.sendKey(23); // DPAD_CENTER
+                          _sendKey(23); // DPAD_CENTER
                         }
                         HapticFeedback.lightImpact();
                       }

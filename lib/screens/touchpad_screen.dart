@@ -125,6 +125,7 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
                     },
                     onDoubleTap: () {
                       widget.service.tap();
+                      if (widget.atv.isConnected) widget.atv.sendKey(23);
                       HapticFeedback.lightImpact();
                     },
                     child: Container(
@@ -273,6 +274,8 @@ class _TouchpadScreenState extends State<TouchpadScreen> {
           child: GestureDetector(
             onTapDown: (_) {
               widget.service.tap();
+              // ATV remote bağlıysa Enter de gönder
+              if (widget.atv.isConnected) widget.atv.sendKey(23);
               HapticFeedback.lightImpact();
             },
             child: Container(
