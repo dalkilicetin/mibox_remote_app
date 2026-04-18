@@ -916,10 +916,10 @@ class _AtvPairingSession {
       final serverModulusBigInt = X509Utils.getModulusFromRSAX509Pem(serverCertPem);
       final serverModulus = _bigIntToUint8List(serverModulusBigInt);
 
-      // Exponent için X509CertificateData parse et
-      final certData = X509Utils.x509CertificateFromPem(serverCertPem);
-      final serverExpBigInt = certData.publicKeyData?.exponent ?? BigInt.from(65537);
-      final serverExp = _bigIntToUint8List(serverExpBigInt);
+      // Server exponent — RSA sertifikalarında her zaman 65537
+      // (X509CertificateData.publicKeyData.exponent tipi Object? olduğu için
+      //  cast yerine standard değeri kullanıyoruz)
+      final serverExp = _bigIntToUint8List(BigInt.from(65537));
 
       final clientModulus = CryptoUtils.rsaPublicKeyModulusToBytes(_keyPair.publicKey);
       final clientExp     = CryptoUtils.rsaPublicKeyExponentToBytes(_keyPair.publicKey);
