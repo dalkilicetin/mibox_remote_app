@@ -555,14 +555,28 @@ class _PairingScreenState extends State<PairingScreen> {
   bool _pairing = false;
   _AtvPairingSession? _session;
   final List<String> _logs = [];
+  IOSink? _logSink;
+
+  Future<void> _initLogFile() async {
+    try {
+      // Android: /sdcard/Download/atv_pairing.log — adb pull ile alınır
+      final f = File('/sdcard/Download/atv_pairing.log');
+      _logSink = f.openWrite(mode: FileMode.writeOnly);
+      _logSink!.writeln('=== ATV Pairing Log ${DateTime.now()} ===');
+    } catch (e) {
+      print('[PAIR] Log dosyası açılamadı: $e');
+    }
+  }
 
   void _log(String msg) {
+    final line = '[${DateTime.now().toIso8601String()}] $msg';
     print('[PAIR] $msg');
+    _logSink?.writeln(line);
     if (mounted) setState(() => _logs.add('[${DateTime.now().second}s] $msg'));
   }
 
   @override
-  void initState() { super.initState(); _startPairing(); }
+  void initState() { super.initState(); _initLogFile().then((_) => _startPairing()); }
 
   static const _candidatePorts = [6467, 6468, 7676];
 
@@ -636,7 +650,7 @@ class _PairingScreenState extends State<PairingScreen> {
   }
 
   @override
-  void dispose() { _session?.dispose(); _pinController.dispose(); super.dispose(); }
+  void dispose() { _logSink?.flush(); _logSink?.close(); _session?.dispose(); _pinController.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {

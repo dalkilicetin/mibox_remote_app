@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/mibox_service.dart';
@@ -31,6 +32,7 @@ class _RemoteScreenState extends State<RemoteScreen>
   bool _atvConnected = false;
   final List<String> _atvLogs = [];
   String _certHash = '';
+  IOSink? _logSink;
 
   bool get _hasApk => widget.service != null;
 
@@ -104,10 +106,18 @@ class _RemoteScreenState extends State<RemoteScreen>
   }
 
   void _addLog(String msg) {
+    final line = '[${DateTime.now().toIso8601String()}] $msg';
     print('[ATV-UI] $msg');
+    // Log dosyasına yaz — adb pull /sdcard/Download/atv_remote.log
+    try {
+      _logSink ??= File('/sdcard/Download/atv_remote.log')
+          .openWrite(mode: FileMode.writeOnly)
+          ..writeln('=== ATV Remote Log ${DateTime.now()} ===');
+      _logSink!.writeln(line);
+    } catch (_) {}
     if (mounted) setState(() {
       _atvLogs.add('[${DateTime.now().second}s] $msg');
-      if (_atvLogs.length > 20) _atvLogs.removeAt(0);
+      if (_atvLogs.length > 200) _atvLogs.removeAt(0); // 20→200 kaybolmasın
       // cert hash'i yakala — kaybolmasın
       if (msg.contains('cert hash:') || msg.contains('Remote cert hash')) {
         _certHash = msg;
@@ -119,6 +129,8 @@ class _RemoteScreenState extends State<RemoteScreen>
 
   @override
   void dispose() {
+    _logSink?.flush();
+    _logSink?.close();
     _tabController.dispose();
     widget.service?.dispose();
     _atv.dispose();
