@@ -17,6 +17,8 @@ class AtvRemoteService {
 
   Timer? _pingTimer;
   Timer? _reconnectTimer;
+  Timer? _configureTimer;
+  bool _configured = false;
 
   // UI log callback — remote_screen buraya bağlanır
   void Function(String)? onLog;
@@ -34,7 +36,7 @@ class AtvRemoteService {
   // stream race condition'ı önlemek için poll yöntemi de var
   bool get lastConnected => _connected;
 
-  // 4-byte length prefix için buffer
+  // Varint length prefix için buffer
   final List<int> _recvBuf = [];
 
   void setCertificates(String cert, String key) {
@@ -49,58 +51,10 @@ class AtvRemoteService {
       _log('Sertifika yok — pairing gerekli');
       return false;
     }
-    // TEST: Python'ın ürettiği sertifika — çalışıp çalışmadığını test et
-    const _testCert = '''-----BEGIN CERTIFICATE-----
-MIIC0DCCAbigAwIBAgICA+gwDQYJKoZIhvcNAQELBQAwFTETMBEGA1UEAwwKVGVz
-dFJlbW90ZTAeFw0yNjA0MTgxNjM0MTBaFw0zNjA0MTUxNjM0MTBaMBUxEzARBgNV
-BAMMClRlc3RSZW1vdGUwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCL
-W9aA9g4mRn1sAEyQQeroteINgNNBJl9BCfZ8sB5+3/B3wiOn8fM7Kq5QK7kelSFH
-UZc4D1PRMdnFvXGlHfvyiDVud5pU1BP9N6ProFC+SsU7OcHeF19VMjdBReHvXE0A
-/wUOPivfRSetZPILJefUbAkjF2fF4CVixTIMY+zFVwAkLZmkXiNuFHlOvlXo9QHt
-4geD86iZt1kmfOJtNdee+2l6uORl3fZaXn8e581Yg82l5zk9w65aTEjC1mW5CZLc
-cGwkCFEWNTc24++j4srjm7YsZ3ZUvcWhHMF5MnMV/CNH2TNdiPKi6lVTudDNGgkw
-pAA96G8/fLk9jxXCmAIRAgMBAAGjKjAoMA8GA1UdEwQIMAYBAf8CAQAwFQYDVR0R
-BA4wDIIKVGVzdFJlbW90ZTANBgkqhkiG9w0BAQsFAAOCAQEAgFQUYNVxq55rRRV5
-6MsnE9ItOO6gIisnCHNTKCTXQnNVWCGTJRy8xq3267DIDAZ5h7st9ETiw6oLBKSX
-VQrAHYu5vMUlmGRoWEo74bSC6LFH7JT1VWRrnrJIcX48JnEwk9T4jgtX8+FNRcih
-KdM01s5wLBEy1nf9PYR1s+o0eWZn08A5WNtEeVYaEdhXe8DecyKbdlPohVWYhgL6
-+vbuCSuk9etIfwyat7+PUB4kbXauYmR9xH/IkjMrhx6e7+dluUtAO8sAL2CApxSq
-DJ7Y/p865fcPgcS0LVEdUOVPReQZZNadQHpcS+NKjpfhDHxsKBjkRlGRG/DME1yg
-Jcik2w==
------END CERTIFICATE-----''';
-    const _testKey = '''-----BEGIN RSA PRIVATE KEY-----
-MIIEogIBAAKCAQEAi1vWgPYOJkZ9bABMkEHq6LXiDYDTQSZfQQn2fLAeft/wd8Ij
-p/HzOyquUCu5HpUhR1GXOA9T0THZxb1xpR378og1bneaVNQT/Tej66BQvkrFOznB
-3hdfVTI3QUXh71xNAP8FDj4r30UnrWTyCyXn1GwJIxdnxeAlYsUyDGPsxVcAJC2Z
-pF4jbhR5Tr5V6PUB7eIHg/OombdZJnzibTXXnvtperjkZd32Wl5/HufNWIPNpec5
-PcOuWkxIwtZluQmS3HBsJAhRFjU3NuPvo+LK45u2LGd2VL3FoRzBeTJzFfwjR9kz
-XYjyoupVU7nQzRoJMKQAPehvP3y5PY8VwpgCEQIDAQABAoIBAArAVqkY3T3CivBp
-3n5I+PFOqkZd6w5tQi808FAC0Lt7leRQtT+tTiqr+opDW/MPe3jdLdQx9Ia2DfBw
-PY6zpJQmbNmH/yoDuZi7x0Oerj6xazbMQtgaSAJ9ObTpX2AAKDhcibHlWyz3Zh39
-uiG2NoTqzSf9/oV41ebhQqD2QED3fey9uF2+i/e+U5xOT0Yg+rtWtiaxwWgjEP2s
-teVczUtyLitL2XCKCA64mqryeXmJEWD6MbKiRWa0LsNa3YXeZFV2jYe4q41I47nf
-Cn9pNMXRSnJi2LDJzrGb+ln51wglZCQEa0VPtTa2x+08Du/+Ui/RKyXXD3Cm9EnU
-FLewMHUCgYEAv9jXL3Y4nek/DAgcHO7upUu50l6JDA3Gs47BNzyiXU+eD+31hQrZ
-aWE5Kqog62tdEU3ggtesUa3XccMKjhvglvjxEAcDNoDM/6iHvyCjx36B8zyNt1tx
-cfVjd0PbKRcP+RTNnXgfsHhmvzgV0v4smn7lUFxWV46R5noruabBx6UCgYEAufW2
-HMYoK0PiFoppuLhkkeQFBNGBx2y/cEth4tKABu++NinW/j2MEitReEaX3bxuwo1s
-KFv1Ph5T8pIYaZ3UwF6bUDNwlyDPAPljE/ABlUGc3kgtEM0UXvDOiUb0mSn58X8A
-xPn9bpUyMUCXETxZ9RTsbkDKZv7XV2WCnUVwpP0CgYBzN0gsoeRouc76a9hua/R4
-4xyrQckuqwtdhOt3P/wG7CzyRigAib5+cjxB6kCxAh63qLyf9+TufOf503gAVq+w
-G7uys3NzhTEYjV9RIsoZollq+j/mEY31MblVxDPX3pjiL2M5Ig5uDjEuwAEjYTDq
-bDFN7NaR6Paoo1ClQ4f3XQKBgCsnAaObuCaSEhz48Z+T6oKQTznXBC6q5aHBXG2u
-O1dgutsGyoUk8yQkOTuX5hXmbC1pc/fJnxdTIlff3xpjLcOWMKRjy3TGgELRnFQ8
-FaH1H9nVFeAYNunxJ3xjos8IFqAbwKn0+QJ4TLVxL50oTBe7S0Iqds1/xajaPX0R
-aBphAoGANtAo+OeABWmZpjliuDNH38wsAg0bfOCABwHA9JL5T2RoTMds4kGhG1qb
-NYBMJpTGZ2ZuDw63EeMIQC9Qjfmzo1gor2btC7JzovxvOCADHmZFzuiwnt0iHN+9
-YK9yDt+rcQk7TJSAHwwPwr5vgiheNwgnXyAsyCUfMBZZ7KbqJvg=
------END RSA PRIVATE KEY-----''';
-
     try {
       final ctx = SecurityContext(withTrustedRoots: false);
-      ctx.useCertificateChainBytes(utf8.encode(_testCert));
-      ctx.usePrivateKeyBytes(utf8.encode(_testKey));
-
+      ctx.useCertificateChainBytes(utf8.encode(_certPem));
+      ctx.usePrivateKeyBytes(utf8.encode(_keyPem));
       _socket = await SecureSocket.connect(
         ip, _remotePort,
         context: ctx,
@@ -120,11 +74,14 @@ YK9yDt+rcQk7TJSAHwwPwr5vgiheNwgnXyAsyCUfMBZZ7KbqJvg=
         onDone:  ()  { _log('Socket closed'); _onDisconnect(); },
       );
 
-      // Bağlantı kurulunca hemen configure+setActive gönder
-      // (TV'nin configure mesajını beklemeye gerek yok)
-      Future.delayed(const Duration(milliseconds: 100), () {
-        _sendConfigure();
-        Future.delayed(const Duration(milliseconds: 100), _sendSetActive);
+      // TV'den configure gelince cevap vereceğiz (_handleMessage)
+      // Fallback: 2 saniye içinde TV mesaj göndermezse biz başlatalım
+      _configureTimer = Timer(const Duration(seconds: 2), () {
+        if (_connected && !_configured) {
+          _log('→ fallback configure (TV mesaj göndermedi)');
+          _sendConfigure();
+          Future.delayed(const Duration(milliseconds: 100), _sendSetActive);
+        }
       });
 
       // Ping her 5 sn
@@ -141,29 +98,43 @@ YK9yDt+rcQk7TJSAHwwPwr5vgiheNwgnXyAsyCUfMBZZ7KbqJvg=
   void _onData(List<int> data) {
     _log('← raw(${data.length}b): ${data.take(8).map((b) => b.toRadixString(16).padLeft(2,"0")).join(" ")}');
     _recvBuf.addAll(data);
-    // 4-byte length prefix parse
-    while (_recvBuf.length >= 4) {
-      final len = ByteData.sublistView(Uint8List.fromList(_recvBuf.sublist(0, 4)))
-          .getUint32(0, Endian.big);
-      _log('← len=$len bufSize=${_recvBuf.length}');
-      if (_recvBuf.length < 4 + len) break;
-      final msg = _recvBuf.sublist(4, 4 + len);
-      _recvBuf.removeRange(0, 4 + len);
+    // Varint length prefix parse
+    while (_recvBuf.isNotEmpty) {
+      // Varint decode — incomplete varint koruması ile
+      int len = 0;
+      int shift = 0;
+      int varintBytes = 0;
+      bool varintComplete = false;
+      for (var i = 0; i < _recvBuf.length && i < 5; i++) {
+        final b = _recvBuf[i];
+        len |= (b & 0x7F) << shift;
+        shift += 7;
+        varintBytes++;
+        if ((b & 0x80) == 0) { varintComplete = true; break; }
+      }
+      // Varint tamamlanmadıysa daha fazla veri bekle
+      if (!varintComplete || _recvBuf.length < varintBytes + len) break;
+      final msg = _recvBuf.sublist(varintBytes, varintBytes + len);
+      _recvBuf.removeRange(0, varintBytes + len);
+      _log('← msg(${len}b): ${msg.take(8).map((b) => b.toRadixString(16).padLeft(2,"0")).join(" ")}');
       _handleMessage(msg);
     }
   }
 
   void _handleMessage(List<int> msg) {
     if (msg.isEmpty) return;
-    final hex = msg.take(16).map((b) => b.toRadixString(16).padLeft(2,'0')).join(' ');
-    _log('← msg(${msg.length}b): $hex');
-
     final tag = msg[0];
     // field 1 (0x0A) = remote_configure — TV ilk mesajı gönderir
     if (tag == 0x0A) {
-      _log('→ configure response gönderiliyor');
-      _sendConfigure();
-      Future.delayed(const Duration(milliseconds: 100), _sendSetActive);
+      _configureTimer?.cancel();
+      if (!_configured) {
+        _configured = true;
+        _log('→ configure gönderiliyor (TV tetikledi)');
+        _sendConfigure();
+        Future.delayed(const Duration(milliseconds: 100), _sendSetActive);
+      } else {
+        _log('← configure (tekrar) — yoksayıldı');
+      }
     }
     // field 8 (0x42) = ping_request
     else if (tag == 0x42) {
@@ -257,14 +228,13 @@ YK9yDt+rcQk7TJSAHwwPwr5vgiheNwgnXyAsyCUfMBZZ7KbqJvg=
   void sendLongClick() => sendKey(AtvKey.dpadCenter, longPress: true);
 
   // ── Düşük seviye ────────────────────────────────────────────────────────────
-  // Format: [4-byte big-endian length][payload]
+  // Format: [varint length][payload] — ATV v2 protokolü
   void _sendMessage(Uint8List payload) {
     if (_socket == null || !_connected) return;
     try {
-      final lenBytes = ByteData(4);
-      lenBytes.setUint32(0, payload.length, Endian.big);
-      _log('→ send(${payload.length}b): ${payload.take(8).map((b) => b.toRadixString(16).padLeft(2,"0")).join(" ")}');
-      _socket!.add(lenBytes.buffer.asUint8List());
+      final varint = _encodeVarint(payload.length);
+      _log('→ send(${payload.length}b prefix=${varint.map((b)=>b.toRadixString(16).padLeft(2,"0")).join()}): ${payload.take(8).map((b) => b.toRadixString(16).padLeft(2,"0")).join(" ")}');
+      _socket!.add(varint);
       _socket!.add(payload);
     } catch (e) {
       _log('send error: $e');
@@ -272,9 +242,23 @@ YK9yDt+rcQk7TJSAHwwPwr5vgiheNwgnXyAsyCUfMBZZ7KbqJvg=
     }
   }
 
+  static Uint8List _encodeVarint(int value) {
+    value = value.toUnsigned(32); // negatif değerlere karşı güvenlik
+    final bytes = <int>[];
+    while (value > 0x7F) {
+      bytes.add((value & 0x7F) | 0x80);
+      value >>= 7;
+    }
+    bytes.add(value & 0x7F);
+    return Uint8List.fromList(bytes);
+  }
+
   DateTime? _connectedAt;
 
   void _onDisconnect() {
+    _configured = false;
+    _configureTimer?.cancel();
+    _recvBuf.clear();
     final uptime = _connectedAt != null
         ? DateTime.now().difference(_connectedAt!).inMilliseconds
         : -1;
@@ -291,6 +275,7 @@ YK9yDt+rcQk7TJSAHwwPwr5vgiheNwgnXyAsyCUfMBZZ7KbqJvg=
   void dispose() {
     _reconnectTimer?.cancel();
     _pingTimer?.cancel();
+    _configureTimer?.cancel();
     _socket?.destroy();
     _connected = false;
     _connCtrl.close();
