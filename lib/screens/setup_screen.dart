@@ -941,44 +941,40 @@ class _AtvPairingSession {
 
       final clientModulus = CryptoUtils.rsaPublicKeyModulusToBytes(_keyPair.publicKey);
       final clientExp     = CryptoUtils.rsaPublicKeyExponentToBytes(_keyPair.publicKey);
-      final pinBytes      = _hexToBytes(pin.substring(4, 6));
+      // PIN: ilk 2 char = checkByte, kalan 4 char = hash input (2 byte)
+      final checkByte   = int.parse(pin.substring(0, 2), radix: 16);
+      final pinHashPart = _hexToBytes(pin.substring(2)); // son 4 hex char = 2 byte
 
-      // SHA256(clientMod + clientExp + serverMod + serverExp + pinBytes)
-      final hashInput = Uint8List(
-        clientModulus.length + clientExp.length +
-        serverModulus.length + serverExp.length + pinBytes.length
-      );
-      var offset = 0;
-      hashInput.setRange(offset, offset += clientModulus.length, clientModulus);
-      hashInput.setRange(offset, offset += clientExp.length, clientExp);
-      hashInput.setRange(offset, offset += serverModulus.length, serverModulus);
-      hashInput.setRange(offset, offset += serverExp.length, serverExp);
-      hashInput.setRange(offset, offset += pinBytes.length, pinBytes);
-      // pointycastle ile SHA-256 — basic_utils API belirsizliği olmadan
-      final sha256 = pc.SHA256Digest();
-      final secret = Uint8List(sha256.digestSize);
-      sha256.update(hashInput, 0, hashInput.length);
-      sha256.doFinal(secret, 0);
+      _log?.call('sendPin: pin=$pin checkByte=${checkByte.toRadixString(16)} pinHash=[${pinHashPart.join(",")}]');
+      _log?.call('  clientMod:${clientModulus.length}b clientExp:${clientExp.length}b serverMod:${serverModulus.length}b serverExp:${serverExp.length}b');
 
-      if (secret[0] != int.parse(pin.substring(0, 2), radix: 16)) {
-        print('[PAIR] Secret mismatch');
+      // SHA256(clientMod + clientExp + serverMod + serverExp + pinHashPart)
+      final hashInput = Uint8List.fromList([
+        ...clientModulus, ...clientExp,
+        ...serverModulus, ...serverExp,
+        ...pinHashPart,
+      ]);
+      final secret = pc.SHA256Digest().process(hashInput);
+
+      _log?.call('  secret[0]=${secret[0]} expected=$checkByte match=${secret[0]==checkByte}');
+
+      if (secret[0] != checkByte) {
+        _log?.call('Secret mismatch: beklenen ${checkByte.toRadixString(16)}, hesaplanan ${secret[0].toRadixString(16)}');
         return false;
       }
 
-      // Secret mesajı — dokümantasyondan exact bytes:
-      // [8,2,16,200,1] + [194,2] field32 + [34] inner_len + [10,32] + secret_bytes
-      // Toplam payload: 5 + 2 + 1 + 2 + 32 = 42 byte
-      final secretPayload = <int>[
-        8, 2, 16, 200, 1,  // protocol_version=2, status=OK
-        194, 2,            // field 32 (secret_ack wrapper), wire type 2
-        34,                // inner length = 34
-        10, 32,            // field 1 (secret), wire type 2, length 32
+      // Field 12 (pairing_secret) = (12<<3)|2 = 98
+      final secretPayload = Uint8List.fromList([
+        8, 2, 16, 200, 1, // protocol_version=2, status=OK
+        98,               // field 12 (pairing_secret), wire type 2
+        34,               // inner length
+        10, 32,           // field 1 (secret bytes), length 32
         ...secret,
-      ];
-      _sendMessage(Uint8List.fromList(secretPayload));
+      ]);
+      _sendMessage(secretPayload);
 
-      // secret_ack bekle
-      await _readMessage(timeoutMs: 3000);
+      final response = await _readMessage(timeoutMs: 3000);
+      _log?.call('← secret_ack: ${response.length}b = [${response.join(",")}]');
       return true;
     } on TimeoutException {
       print('[PAIR] Timeout waiting for response');
