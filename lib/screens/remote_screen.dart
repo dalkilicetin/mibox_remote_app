@@ -40,13 +40,25 @@ class _RemoteScreenState extends State<RemoteScreen>
   Future<void> _initAtv() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final cert = prefs.getString('mibox_cert') ?? '';
-      final key = prefs.getString('mibox_key') ?? '';
+      // Yeni format önce denenir, ardından eski formatlardan migration yapılır
+      final cert = prefs.getString('atv_cert_${widget.ip}')
+                ?? prefs.getString('mibox_cert_${widget.ip}')
+                ?? prefs.getString('mibox_cert')
+                ?? '';
+      final key  = prefs.getString('atv_key_${widget.ip}')
+                ?? prefs.getString('mibox_key_${widget.ip}')
+                ?? prefs.getString('mibox_key')
+                ?? '';
+      // Eski formattan geldiyse yeni formata yaz
+      if (cert.isNotEmpty && key.isNotEmpty) {
+        await prefs.setString('atv_cert_${widget.ip}', cert);
+        await prefs.setString('atv_key_${widget.ip}', key);
+      }
       if (cert.isNotEmpty && key.isNotEmpty) {
         _atv.setCertificates(cert, key);
         await _atv.connect(widget.ip);
       } else {
-        print('[ATV] Sertifika yok - pairing gerekli');
+        print('[ATV] Sertifika yok — pairing gerekli');
       }
     } catch (e) {
       print('[ATV] Init error: $e');

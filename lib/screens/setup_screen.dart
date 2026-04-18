@@ -37,7 +37,11 @@ class _SetupScreenState extends State<SetupScreen> {
     _startScan();
   }
 
-  Future<String?> _getSubnet() async {
+  // RFC 1918 private IP aralıklarının tamamını destekler:
+  // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+  // Birden fazla interface varsa hepsini döner
+  Future<List<String>> _getSubnets() async {
+    final subnets = <String>[];
     try {
       final ifaces = await NetworkInterface.list(
         type: InternetAddressType.IPv4,
@@ -46,14 +50,25 @@ class _SetupScreenState extends State<SetupScreen> {
       for (final iface in ifaces) {
         for (final addr in iface.addresses) {
           final ip = addr.address;
-          if (ip.startsWith('192.168.') || ip.startsWith('10.')) {
-            final parts = ip.split('.');
-            return '${parts[0]}.${parts[1]}.${parts[2]}';
+          final parts = ip.split('.');
+          if (parts.length != 4) continue;
+          final first = int.tryParse(parts[0]) ?? 0;
+          final second = int.tryParse(parts[1]) ?? 0;
+          String? subnet;
+          if (first == 10) {
+            subnet = '${parts[0]}.${parts[1]}.${parts[2]}';
+          } else if (first == 172 && second >= 16 && second <= 31) {
+            subnet = '${parts[0]}.${parts[1]}.${parts[2]}';
+          } else if (first == 192 && second == 168) {
+            subnet = '${parts[0]}.${parts[1]}.${parts[2]}';
+          }
+          if (subnet != null && !subnets.contains(subnet)) {
+            subnets.add(subnet);
           }
         }
       }
     } catch (_) {}
-    return null;
+    return subnets;
   }
 
   Future<bool> _checkAtv(String ip) async {
@@ -77,8 +92,8 @@ class _SetupScreenState extends State<SetupScreen> {
       _total = 0;
     });
 
-    final subnet = await _getSubnet();
-    if (subnet == null) {
+    final subnets = await _getSubnets();
+    if (subnets.isEmpty) {
       setState(() {
         _scanning = false;
         _scanStatus = 'Wi-Fi ağı bulunamadı.\nWi-Fi\'a bağlı olduğunuzdan emin olun.';
@@ -86,34 +101,46 @@ class _SetupScreenState extends State<SetupScreen> {
       return;
     }
 
+    // Birden fazla subnet olabilir (VPN + Wi-Fi gibi)
+    // Her subnet için 254 host taranır
     setState(() {
-      _scanStatus = 'Taranıyor: $subnet.0/24';
-      _total = 254;
+      _scanStatus = 'Taranıyor: ${subnets.length} ağ...';
+      _total = 254 * subnets.length;
     });
 
     final prefs = await SharedPreferences.getInstance();
     final found = <DiscoveredDevice>[];
-    const batchSize = 20;
+    const batchSize = 30;
+    var totalScanned = 0;
 
-    for (var start = 1; start <= 254; start += batchSize) {
+    for (final subnet in subnets) {
       if (!mounted) return;
-      final end = min(start + batchSize - 1, 254);
-      final futures = <Future<void>>[];
+      setState(() => _scanStatus = 'Taranıyor: $subnet.0/24');
 
-      for (var i = start; i <= end; i++) {
-        final ip = '$subnet.$i';
-        futures.add(() async {
-          final hasAtv = await _checkAtv(ip);
-          if (hasAtv) {
-            final hasCert = (prefs.getString('mibox_cert_$ip') ?? '').isNotEmpty;
-            found.add(DiscoveredDevice(ip: ip, hasCert: hasCert));
-            if (mounted) setState(() => _devices = List.from(found));
-          }
-        }());
+      for (var start = 1; start <= 254; start += batchSize) {
+        if (!mounted) return;
+        final end = min(start + batchSize - 1, 254);
+        final futures = <Future<void>>[];
+
+        for (var i = start; i <= end; i++) {
+          final ip = '$subnet.$i';
+          futures.add(() async {
+            final hasAtv = await _checkAtv(ip);
+            if (hasAtv) {
+              final hasCert = (prefs.getString('atv_cert_$ip') ?? '').isNotEmpty;
+              // Aynı IP zaten listede varsa ekleme
+              if (!found.any((d) => d.ip == ip)) {
+                found.add(DiscoveredDevice(ip: ip, hasCert: hasCert));
+                if (mounted) setState(() => _devices = List.from(found));
+              }
+            }
+          }());
+        }
+
+        await Future.wait(futures);
+        totalScanned += (end - start + 1);
+        if (mounted) setState(() => _scanned = totalScanned);
       }
-
-      await Future.wait(futures);
-      if (mounted) setState(() => _scanned = end);
     }
 
     if (mounted) {
@@ -128,8 +155,22 @@ class _SetupScreenState extends State<SetupScreen> {
 
   Future<void> _connectTo(DiscoveredDevice device) async {
     final prefs = await SharedPreferences.getInstance();
-    final cert = prefs.getString('mibox_cert_${device.ip}') ?? '';
-    final key = prefs.getString('mibox_key_${device.ip}') ?? '';
+    // Yeni format: atv_cert_{ip}
+    // Eski format migration: mibox_cert_{ip} veya mibox_cert (global)
+    final cert = prefs.getString('atv_cert_${device.ip}')
+        ?? prefs.getString('mibox_cert_${device.ip}')
+        ?? prefs.getString('mibox_cert')
+        ?? '';
+    final key = prefs.getString('atv_key_${device.ip}')
+        ?? prefs.getString('mibox_key_${device.ip}')
+        ?? prefs.getString('mibox_key')
+        ?? '';
+
+    // Eski formatta bulunduysa yeni formata migrate et
+    if (cert.isNotEmpty && key.isNotEmpty) {
+      await prefs.setString('atv_cert_${device.ip}', cert);
+      await prefs.setString('atv_key_${device.ip}', key);
+    }
 
     if (cert.isEmpty || key.isEmpty) {
       if (!mounted) return;
@@ -165,7 +206,7 @@ class _SetupScreenState extends State<SetupScreen> {
   }
 
   Future<void> _manualEntry() async {
-    final ctrl = TextEditingController(text: '192.168.1.');
+    final ctrl = TextEditingController();
     final prefs = await SharedPreferences.getInstance();
     final saved = prefs.getString('mibox_ip');
     if (saved != null) ctrl.text = saved;
@@ -182,7 +223,7 @@ class _SetupScreenState extends State<SetupScreen> {
           autofocus: true,
           style: const TextStyle(color: Colors.white),
           decoration: InputDecoration(
-            hintText: '192.168.1.xxx',
+            hintText: '192.168.x.x',  // Ağınızın IP aralığını girin
             hintStyle: const TextStyle(color: Colors.grey),
             filled: true,
             fillColor: const Color(0xFF0f3460),
@@ -206,7 +247,8 @@ class _SetupScreenState extends State<SetupScreen> {
     );
 
     if (ip == null || ip.isEmpty) return;
-    final cert = prefs.getString('mibox_cert_$ip') ?? '';
+    final cert = prefs.getString('atv_cert_$ip')
+        ?? prefs.getString('mibox_cert_$ip') ?? '';
     final device = DiscoveredDevice(ip: ip, hasCert: cert.isNotEmpty);
     await _connectTo(device);
   }
@@ -283,6 +325,9 @@ class _SetupScreenState extends State<SetupScreen> {
                           onTap: () => _connectTo(d),
                           onRepair: () async {
                             final prefs = await SharedPreferences.getInstance();
+                            await prefs.remove('atv_cert_${d.ip}');
+                            await prefs.remove('atv_key_${d.ip}');
+                            // Eski format temizle
                             await prefs.remove('mibox_cert_${d.ip}');
                             await prefs.remove('mibox_key_${d.ip}');
                             if (!mounted) return;
@@ -480,8 +525,8 @@ class _PairingScreenState extends State<PairingScreen> {
       final ok = await _session!.sendPin(pin);
       if (ok) {
         final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('mibox_cert_${widget.ip}', _session!.certPem);
-        await prefs.setString('mibox_key_${widget.ip}', _session!.keyPem);
+        await prefs.setString('atv_cert_${widget.ip}', _session!.certPem);
+        await prefs.setString('atv_key_${widget.ip}', _session!.keyPem);
         if (mounted) Navigator.pop(context, true);
       } else {
         setState(() { _pairing = false; _status = 'Yanlış kod! Tekrar deneyin:'; });
@@ -607,10 +652,14 @@ class _AtvPairingSession {
     }
   }
 
+  // clientName: ATV protokolü için kimlik. 'AndroidTV Remote' uyumlu her string çalışır.
+  static const _clientName = 'ATV Remote';
+  static const _clientId = 'com.mibox.remote';
+
   void _sendPairingRequest() {
     final inner = _ProtoWriter()
-      ..writeString(1, 'MiBoxRemote')
-      ..writeString(2, 'MiBoxRemote');
+      ..writeString(1, _clientName)
+      ..writeString(2, _clientId);
     final outer = _ProtoWriter()..writeBytes(10, inner.toBytes());
     _sendMessage(outer.toBytes());
   }
@@ -684,13 +733,13 @@ class _AtvPairingSession {
         [0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x0b])));
     sigAlg.add(asn1.ASN1Null());
     tbsCert.add(sigAlg);
-    tbsCert.add(_buildName('MiBoxRemote'));
+    tbsCert.add(_buildName(_clientId));
     final now = DateTime.now().toUtc();
     final validity = asn1.ASN1Sequence();
     validity.add(asn1.ASN1UtcTime(now));
     validity.add(asn1.ASN1UtcTime(now.add(const Duration(days: 3650))));
     tbsCert.add(validity);
-    tbsCert.add(_buildName('MiBoxRemote'));
+    tbsCert.add(_buildName(_clientId));
     tbsCert.add(_buildPublicKeyInfo(keyPair.publicKey));
 
     final signer = pc.RSASigner(pc.SHA256Digest(), '0609608648016503040201')
@@ -781,15 +830,23 @@ class _AtvPairingSession {
     } catch (_) { return Uint8List(0); }
   }
 
-  /// asn1lib 1.6.5'te ASN1Integer.integer getter kaldırıldı.
-  /// valueBytes'tan BigInt manuel parse ediyoruz.
+  /// asn1lib 1.6.5'te ASN1Integer.integer getter kaldırıldı,
+  /// valueBytes ise method (property değil). En stabil yol:
+  /// encodedBytes'tan TLV header'ı manuel skip ederek value okuma.
+  /// DER format: 0x02 [length] [value bytes]
   static BigInt _asn1IntToBigInt(asn1.ASN1Integer node) {
-    final bytes = node.valueBytes;
-    // İlk byte 0x00 ise (pozitif işaret byte'ı) atla
-    final start = (bytes.isNotEmpty && bytes[0] == 0x00) ? 1 : 0;
+    final encoded = node.encodedBytes;
+    var offset = 1; // tag byte'ını atla (0x02)
+    // Length: 0x80'den büyükse çok-byte length encoding
+    final lenByte = encoded[offset++];
+    if (lenByte > 0x80) {
+      offset += lenByte - 0x80;
+    }
+    // Pozitif sayı işaret byte'ı (0x00) varsa atla
+    if (offset < encoded.length && encoded[offset] == 0x00) offset++;
     var result = BigInt.zero;
-    for (var i = start; i < bytes.length; i++) {
-      result = (result << 8) | BigInt.from(bytes[i]);
+    for (var i = offset; i < encoded.length; i++) {
+      result = (result << 8) | BigInt.from(encoded[i]);
     }
     return result;
   }
