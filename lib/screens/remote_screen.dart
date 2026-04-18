@@ -30,6 +30,7 @@ class _RemoteScreenState extends State<RemoteScreen>
   final AtvRemoteService _atv = AtvRemoteService();
   bool _atvConnected = false;
   final List<String> _atvLogs = [];
+  String _certHash = '';
 
   bool get _hasApk => widget.service != null;
 
@@ -37,7 +38,7 @@ class _RemoteScreenState extends State<RemoteScreen>
   void initState() {
     super.initState();
     // APK varsa 2 tab (Air Mouse + Touchpad), yoksa 1 tab (D-Pad)
-    _tabController = TabController(length: _hasApk ? 2 : 1, vsync: this);
+    _tabController = TabController(length: _hasApk ? 3 : 2, vsync: this);
 
     if (_hasApk) {
       _apkConnected = widget.service!.isConnected;
@@ -105,50 +106,14 @@ class _RemoteScreenState extends State<RemoteScreen>
     if (mounted) setState(() {
       _atvLogs.add('[${DateTime.now().second}s] $msg');
       if (_atvLogs.length > 20) _atvLogs.removeAt(0);
+      // cert hash'i yakala — kaybolmasın
+      if (msg.contains('cert hash:') || msg.contains('Remote cert hash')) {
+        _certHash = msg;
+      }
     });
   }
 
-  void _showDebugDialog() {
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF12122a),
-        title: Row(
-          children: [
-            const Text('ATV Debug', style: TextStyle(color: Colors.white, fontSize: 14)),
-            const Spacer(),
-            TextButton(
-              onPressed: () { Navigator.pop(context); _initAtv(); },
-              child: const Text('Yeniden Bağlan', style: TextStyle(color: Color(0xFFe94560), fontSize: 11)),
-            ),
-          ],
-        ),
-        content: SizedBox(
-          width: double.maxFinite,
-          height: 300,
-          child: ListView.builder(
-            itemCount: _atvLogs.length,
-            itemBuilder: (_, i) => Text(
-              _atvLogs[i],
-              style: TextStyle(
-                color: _atvLogs[i].contains('HATA') || _atvLogs[i].contains('başarısız')
-                    ? Colors.redAccent
-                    : _atvLogs[i].contains('✓') ? const Color(0xFF4ade80) : Colors.grey,
-                fontSize: 11,
-                fontFamily: 'monospace',
-              ),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Kapat', style: TextStyle(color: Colors.grey)),
-          ),
-        ],
-      ),
-    );
-  }
+
 
   @override
   void dispose() {
@@ -195,14 +160,26 @@ class _RemoteScreenState extends State<RemoteScreen>
                             color: _atvConnected ? const Color(0xFF4ade80) : Colors.grey,
                             fontSize: 11)),
                     const Spacer(),
+                    if (_certHash.isNotEmpty)
+                      GestureDetector(
+                        onTap: () {},
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF0f3460),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            _certHash.length > 20 ? _certHash.substring(0, 20) + '...' : _certHash,
+                            style: const TextStyle(color: Color(0xFF4ade80), fontSize: 9, fontFamily: 'monospace'),
+                          ),
+                        ),
+                      ),
+                    const SizedBox(width: 4),
                     Text(widget.ip,
                         style: const TextStyle(color: Colors.grey, fontSize: 11)),
                     const SizedBox(width: 8),
-                    GestureDetector(
-                      onTap: () => _showDebugDialog(),
-                      child: const Icon(Icons.bug_report, color: Colors.grey, size: 18),
-                    ),
-                    const SizedBox(width: 8),
+
                     GestureDetector(
                       onTap: () => Navigator.pop(context),
                       child: const Icon(Icons.settings, color: Colors.grey, size: 18),
@@ -211,32 +188,6 @@ class _RemoteScreenState extends State<RemoteScreen>
                 ),
               ),
               // Tab bar
-              // Mini log paneli — her zaman görünür
-              if (_atvLogs.isNotEmpty)
-                Container(
-                  width: double.infinity,
-                  height: 48,
-                  color: const Color(0xFF0a0a1a),
-                  child: ListView.builder(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    itemCount: _atvLogs.length,
-                    reverse: true,
-                    itemBuilder: (_, i) {
-                      final log = _atvLogs[_atvLogs.length - 1 - i];
-                      return Text(log,
-                        style: TextStyle(
-                          fontSize: 9,
-                          fontFamily: 'monospace',
-                          color: log.contains('HATA') || log.contains('KESİLDİ') || log.contains('error')
-                              ? Colors.redAccent
-                              : log.contains('✓') || log.contains('BAĞLANDI')
-                                  ? const Color(0xFF4ade80)
-                                  : Colors.grey,
-                        ),
-                      );
-                    },
-                  ),
-                ),
               TabBar(
                 controller: _tabController,
                 indicatorColor: const Color(0xFFe94560),
@@ -246,6 +197,7 @@ class _RemoteScreenState extends State<RemoteScreen>
                   if (_hasApk) const Tab(text: 'Air Mouse'),
                   if (_hasApk) const Tab(text: 'Touchpad'),
                   if (!_hasApk) const Tab(text: 'Kumanda'),
+                  const Tab(text: '🐛 Debug'),
                 ],
               ),
             ],
@@ -259,6 +211,11 @@ class _RemoteScreenState extends State<RemoteScreen>
           if (_hasApk) AirMouseScreen(service: widget.service!, atv: _atv),
           if (_hasApk) TouchpadScreen(service: widget.service!, atv: _atv),
           if (!_hasApk) _DpadScreen(atv: _atv),
+          _DebugScreen(
+            logs: _atvLogs,
+            onClear: () => setState(() => _atvLogs.clear()),
+            onReconnect: () { _atvLogs.clear(); _initAtv(); },
+          ),
         ],
       ),
     );
@@ -397,6 +354,90 @@ class _DpadScreen extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+// ── Debug Sekmesi ─────────────────────────────────────────────────────────────
+class _DebugScreen extends StatelessWidget {
+  final List<String> logs;
+  final VoidCallback onClear;
+  final VoidCallback onReconnect;
+
+  const _DebugScreen({
+    required this.logs,
+    required this.onClear,
+    required this.onReconnect,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        // Kontrol butonları
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: onReconnect,
+                  icon: const Icon(Icons.refresh, size: 16, color: Color(0xFFe94560)),
+                  label: const Text('Yeniden Bağlan', style: TextStyle(color: Color(0xFFe94560), fontSize: 12)),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Color(0xFFe94560)),
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton(
+                onPressed: onClear,
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Colors.grey),
+                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+                child: const Text('Temizle', style: TextStyle(color: Colors.grey, fontSize: 12)),
+              ),
+            ],
+          ),
+        ),
+
+        // Log listesi
+        Expanded(
+          child: logs.isEmpty
+              ? const Center(
+                  child: Text('Log yok', style: TextStyle(color: Colors.grey)),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                  reverse: true,
+                  itemCount: logs.length,
+                  itemBuilder: (_, i) {
+                    final log = logs[logs.length - 1 - i];
+                    Color color;
+                    if (log.contains('HATA') || log.contains('KESİLDİ') || log.contains('error') || log.contains('başarısız')) {
+                      color = Colors.redAccent;
+                    } else if (log.contains('✓') || log.contains('BAĞLANDI') || log.contains('hash')) {
+                      color = const Color(0xFF4ade80);
+                    } else if (log.contains('→') || log.contains('←')) {
+                      color = const Color(0xFF60a5fa);
+                    } else {
+                      color = Colors.grey;
+                    }
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 1),
+                      child: Text(
+                        log,
+                        style: TextStyle(color: color, fontSize: 10, fontFamily: 'monospace'),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
     );
   }
 }
