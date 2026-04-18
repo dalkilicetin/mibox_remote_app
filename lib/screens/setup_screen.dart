@@ -554,22 +554,54 @@ class _PairingScreenState extends State<PairingScreen> {
   bool _waitingPin = false;
   bool _pairing = false;
   _AtvPairingSession? _session;
+  final List<String> _logs = [];
+
+  void _log(String msg) {
+    print('[PAIR] $msg');
+    if (mounted) setState(() => _logs.add('[${DateTime.now().second}s] $msg'));
+  }
 
   @override
   void initState() { super.initState(); _startPairing(); }
 
+  static const _candidatePorts = [6467, 6468, 7676];
+
   Future<void> _startPairing() async {
+    _logs.clear();
     try {
+      _log('Sertifika oluşturuluyor...');
       setState(() => _status = 'Sertifika oluşturuluyor...');
-      _session = await _AtvPairingSession.create(widget.ip, pairingPort: widget.pairingPort);
-      setState(() => _status = 'TV\'ye bağlanılıyor...');
-      final ok = await _session!.connect();
-      if (ok) {
+
+      final portsToTry = [
+        widget.pairingPort,
+        ..._candidatePorts.where((p) => p != widget.pairingPort),
+      ];
+      _log('Denenecek portlar: $portsToTry');
+
+      int? workingPort;
+      for (final port in portsToTry) {
+        _log('Port $port deneniyor...');
+        setState(() => _status = 'Bağlanılıyor... (port $port)');
+        _session = await _AtvPairingSession.create(widget.ip, pairingPort: port);
+        final error = await _session!.connectWithLog(_log);
+        if (error == null) {
+          workingPort = port;
+          _log('Port $port OK — PIN bekleniyor');
+          break;
+        } else {
+          _log('Port $port hata: $error');
+        }
+      }
+
+      if (workingPort != null) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setInt('atv_pairing_port_${widget.ip}', workingPort);
         setState(() { _status = 'TV ekranındaki 6 haneli kodu girin:'; _waitingPin = true; });
       } else {
-        setState(() => _status = 'Bağlantı hatası! TV açık mı?\n(port ${widget.pairingPort})');
+        setState(() => _status = 'Bağlantı kurulamadı!');
       }
     } catch (e) {
+      _log('Exception: $e');
       setState(() => _status = 'Hata: $e');
     }
   }
@@ -653,9 +685,42 @@ class _PairingScreenState extends State<PairingScreen> {
                 ),
               ),
             ],
-            if (!_waitingPin && !_status.contains('Hata')) ...[
+            if (!_waitingPin && !_status.contains('Hata') && !_status.contains('kurulamadı')) ...[
               const SizedBox(height: 24),
               const CircularProgressIndicator(color: Color(0xFFe94560)),
+            ],
+
+            // Debug log paneli — her zaman görünür
+            if (_logs.isNotEmpty) ...[
+              const SizedBox(height: 24),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0a0a1a),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFF0f3460)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('DEBUG LOG',
+                        style: TextStyle(color: Color(0xFF4ade80),
+                            fontSize: 10, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 4),
+                    ..._logs.map((l) => Text(l,
+                        style: TextStyle(
+                          color: l.contains('hata') || l.contains('Hata') || l.contains('başarısız')
+                              ? Colors.redAccent
+                              : l.contains('OK') || l.contains('tamamlandı')
+                                  ? const Color(0xFF4ade80)
+                                  : Colors.grey,
+                          fontSize: 11,
+                          fontFamily: 'monospace',
+                        ))),
+                  ],
+                ),
+              ),
             ],
           ],
         ),
@@ -687,8 +752,10 @@ class _AtvPairingSession {
     return _AtvPairingSession._(ip, pairingPort, certPem, keyPem, keyPair);
   }
 
-  Future<bool> connect() async {
+  // null = başarılı, String = hata mesajı
+  Future<String?> connectWithLog(void Function(String) log) async {
     try {
+      log('TLS bağlantısı kuruluyor → $ip:$pairingPort');
       final context = SecurityContext(withTrustedRoots: false);
       context.useCertificateChainBytes(utf8.encode(certPem));
       context.usePrivateKeyBytes(utf8.encode(keyPem));
@@ -696,15 +763,56 @@ class _AtvPairingSession {
           context: context,
           onBadCertificate: (cert) { _serverCert = cert; return true; },
           timeout: const Duration(seconds: 5));
+      log('TLS OK — sunucu sertifikası alındı: ${_serverCert != null}');
       _setupDataListener();
+
+      // 1. pairing_request
       _sendPairingRequest();
-      // pairing_request_ack bekle
-      await _readMessage(timeoutMs: 3000);
-      return true;
+      log('→ pairing_request gönderildi');
+
+      // 2. pairing_request_ack
+      try {
+        final ack = await _readMessage(timeoutMs: 3000);
+        log('← pairing_request_ack: ${ack.length} byte');
+      } catch (e) {
+        return 'pairing_request_ack alınamadı: $e';
+      }
+
+      // 3. options
+      _sendOptions();
+      log('→ options gönderildi');
+
+      // 4. options (TV'den) — bu mesajdan sonra TV PIN'i gösterir
+      try {
+        final opts = await _readMessage(timeoutMs: 5000);
+        log('← options alındı: ${opts.length} byte — TV PIN gösteriyor olmalı');
+      } catch (e) {
+        return 'options alınamadı: $e';
+      }
+
+      // 5. configuration
+      _sendConfiguration();
+      log('→ configuration gönderildi');
+
+      // 6. configuration_ack
+      try {
+        final cfgAck = await _readMessage(timeoutMs: 3000);
+        log('← configuration_ack: ${cfgAck.length} byte');
+      } catch (e) {
+        return 'configuration_ack alınamadı: $e';
+      }
+
+      log('Handshake tamamlandı — PIN girişi bekleniyor');
+      return null; // başarılı
     } catch (e) {
-      print('[PAIR] connect error: $e');
-      return false;
+      return 'Bağlantı hatası: $e';
     }
+  }
+
+  // Eski connect() — geriye dönük uyumluluk
+  Future<bool> connect() async {
+    final err = await connectWithLog((msg) => print('[PAIR] $msg'));
+    return err == null;
   }
 
   // Pairing akışı (ATV Remote Protocol v2):
