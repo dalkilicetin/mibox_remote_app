@@ -58,6 +58,7 @@ class _RemoteScreenState extends State<RemoteScreen>
   }
 
   Future<void> _initAtv() async {
+    _atv.onLog = (msg) { if (mounted) _addLog(msg); };
     _addLog('ATV bağlanılıyor: ${widget.ip}:${widget.remotePort}');
     try {
       final prefs = await SharedPreferences.getInstance();

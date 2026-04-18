@@ -18,9 +18,21 @@ class AtvRemoteService {
   Timer? _pingTimer;
   Timer? _reconnectTimer;
 
+  // UI log callback — remote_screen buraya bağlanır
+  void Function(String)? onLog;
+
+  void _log(String msg) {
+    print('[ATV] $msg');
+    onLog?.call(msg);
+  }
+
   final StreamController<bool> _connCtrl = StreamController<bool>.broadcast();
   Stream<bool> get connectionStream => _connCtrl.stream;
   bool get isConnected => _connected;
+
+  // connect() true döndüğünde remote_screen bunu okusun diye
+  // stream race condition'ı önlemek için poll yöntemi de var
+  bool get lastConnected => _connected;
 
   // 4-byte length prefix için buffer
   final List<int> _recvBuf = [];
@@ -34,7 +46,7 @@ class AtvRemoteService {
     _ip = ip;
     _remotePort = remotePort;
     if (_certPem.isEmpty || _keyPem.isEmpty) {
-      print('[ATV] Sertifika yok — pairing gerekli');
+      _log('Sertifika yok — pairing gerekli');
       return false;
     }
     try {
@@ -51,13 +63,14 @@ class AtvRemoteService {
 
       _connected = true;
       _connectedAt = DateTime.now();
+      _log('stream listener sayısı: add(true) öncesi');
       _connCtrl.add(true);
-      print('[ATV] Bağlandı: $ip:$_remotePort');
+      _log('Bağlandı: $ip:$_remotePort — stream.add(true) gönderildi');
 
       _socket!.listen(
         _onData,
-        onError: (e) { print('[ATV] Socket error: $e'); _onDisconnect(); },
-        onDone:  ()  { print('[ATV] Socket closed'); _onDisconnect(); },
+        onError: (e) { _log('Socket error: $e'); _onDisconnect(); },
+        onDone:  ()  { _log('Socket closed'); _onDisconnect(); },
       );
 
       // Bağlantı kurulunca hemen configure+setActive gönder
@@ -71,7 +84,7 @@ class AtvRemoteService {
       _pingTimer = Timer.periodic(const Duration(seconds: 5), (_) => _sendPing());
       return true;
     } catch (e) {
-      print('[ATV] Bağlantı hatası: $e');
+      _log('Bağlantı hatası: $e');
       _connected = false;
       _connCtrl.add(false);
       return false;
@@ -79,11 +92,13 @@ class AtvRemoteService {
   }
 
   void _onData(List<int> data) {
+    _log('← raw(${data.length}b): ${data.take(8).map((b) => b.toRadixString(16).padLeft(2,"0")).join(" ")}');
     _recvBuf.addAll(data);
     // 4-byte length prefix parse
     while (_recvBuf.length >= 4) {
       final len = ByteData.sublistView(Uint8List.fromList(_recvBuf.sublist(0, 4)))
           .getUint32(0, Endian.big);
+      _log('← len=$len bufSize=${_recvBuf.length}');
       if (_recvBuf.length < 4 + len) break;
       final msg = _recvBuf.sublist(4, 4 + len);
       _recvBuf.removeRange(0, 4 + len);
@@ -94,28 +109,28 @@ class AtvRemoteService {
   void _handleMessage(List<int> msg) {
     if (msg.isEmpty) return;
     final hex = msg.take(16).map((b) => b.toRadixString(16).padLeft(2,'0')).join(' ');
-    print('[ATV] ← msg(${msg.length}b): $hex');
+    _log('← msg(${msg.length}b): $hex');
 
     final tag = msg[0];
     // field 1 (0x0A) = remote_configure — TV ilk mesajı gönderir
     if (tag == 0x0A) {
-      print('[ATV] → configure response gönderiliyor');
+      _log('→ configure response gönderiliyor');
       _sendConfigure();
       Future.delayed(const Duration(milliseconds: 100), _sendSetActive);
     }
     // field 8 (0x42) = ping_request
     else if (tag == 0x42) {
-      print('[ATV] → pong gönderiliyor');
+      _log('→ pong gönderiliyor');
       _sendPong(msg);
     }
     // field 9 (0x4A) = ping_response — yoksay
     else if (tag == 0x4A) {}
     // field 2 (0x12) = remote_set_active response — bağlantı hazır
     else if (tag == 0x12) {
-      print('[ATV] ✓ Handshake tamamlandı');
+      _log('✓ Handshake tamamlandı');
     }
     else {
-      print('[ATV] bilinmeyen tag: 0x${tag.toRadixString(16)}');
+      _log('bilinmeyen tag: 0x${tag.toRadixString(16)}');
     }
   }
 
@@ -136,7 +151,7 @@ class AtvRemoteService {
     // RemoteMessage { remote_configure=1: cfg }
     final msg = _ProtoWriter()..writeBytes(1, cfg.toBytes());
     _sendMessage(msg.toBytes());
-    print('[ATV] → configure gönderildi');
+    _log('→ configure gönderildi');
   }
 
   void _sendSetActive() {
@@ -145,7 +160,7 @@ class AtvRemoteService {
     // RemoteMessage { remote_set_active=2: active }
     final msg = _ProtoWriter()..writeBytes(2, active.toBytes());
     _sendMessage(msg.toBytes());
-    print('[ATV] → set_active gönderildi');
+    _log('→ set_active gönderildi');
   }
 
   // Pong: RemoteMessage { remote_ping_response=9: { val1: same as request } }
@@ -203,9 +218,11 @@ class AtvRemoteService {
     try {
       final lenBytes = ByteData(4);
       lenBytes.setUint32(0, payload.length, Endian.big);
+      _log('→ send(${payload.length}b): ${payload.take(8).map((b) => b.toRadixString(16).padLeft(2,"0")).join(" ")}');
       _socket!.add(lenBytes.buffer.asUint8List());
       _socket!.add(payload);
-    } catch (_) {
+    } catch (e) {
+      _log('send error: $e');
       _onDisconnect();
     }
   }
@@ -216,7 +233,7 @@ class AtvRemoteService {
     final uptime = _connectedAt != null
         ? DateTime.now().difference(_connectedAt!).inMilliseconds
         : -1;
-    print('[ATV] Bağlantı kesildi — uptime: ${uptime}ms');
+    _log('Bağlantı kesildi — uptime: ${uptime}ms');
     _connected = false;
     _pingTimer?.cancel();
     _connCtrl.add(false);
