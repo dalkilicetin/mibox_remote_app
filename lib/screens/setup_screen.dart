@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:pointycastle/export.dart' as pc;
 import 'package:basic_utils/basic_utils.dart';
+import 'package:asn1lib/asn1lib.dart' as asn1lib;
 import '../services/mibox_service.dart';
 import 'remote_screen.dart';
 
@@ -1015,139 +1016,53 @@ class _AtvPairingSession {
     _socket!.add(Uint8List.fromList([payload.length, ...payload]));
   }
 
-  // DER X509'dan RSA public key modulus/exponent extract
-  // X.509 DER yapısı: SEQUENCE { SEQUENCE { ... spki ... } BITSTRING { 0x00 SEQUENCE { INTEGER(mod) INTEGER(exp) } } }
+  // DER X509'dan RSA public key modulus/exponent — asn1lib kullanarak
   static Uint8List _extractModulusFromDer(Uint8List der) {
     try {
-      final pubKeySeq = _getSpkiSequence(der);
-      if (pubKeySeq == null) return Uint8List(0);
-      return _derIntToBytes(pubKeySeq, 0);
-    } catch (_) { return Uint8List(0); }
+      final asn1 = asn1lib.ASN1Parser(der);
+      final cert = asn1.nextObject() as asn1lib.ASN1Sequence;        // Certificate
+      final tbs  = cert.elements![0] as asn1lib.ASN1Sequence;        // TBSCertificate
+      final spki = tbs.elements![6] as asn1lib.ASN1Sequence;         // SubjectPublicKeyInfo
+      final bits = spki.elements![1] as asn1lib.ASN1BitString;       // BIT STRING
+      // BIT STRING içeriği: 0x00 prefix + SEQUENCE { INTEGER mod, INTEGER exp }
+      final inner = bits.contentBytes().sublist(1);
+      final pubKey = asn1lib.ASN1Parser(inner).nextObject() as asn1lib.ASN1Sequence;
+      final modNode = pubKey.elements![0] as asn1lib.ASN1Integer;
+      return _asn1IntegerToBytes(modNode);
+    } catch (e) {
+      print('[PAIR] extractModulus error: $e');
+      return Uint8List(0);
+    }
   }
 
   static Uint8List _extractExponentFromDer(Uint8List der) {
     try {
-      final pubKeySeq = _getSpkiSequence(der);
-      if (pubKeySeq == null) return Uint8List(0);
-      return _derIntToBytes(pubKeySeq, 1);
-    } catch (_) { return Uint8List(0); }
-  }
-
-  // DER SEQUENCE içindeki n'inci INTEGER'ı byte array olarak döndür
-  static Uint8List _derIntToBytes(Uint8List seq, int index) {
-    var offset = 0;
-    var count = 0;
-    while (offset < seq.length) {
-      final tag = seq[offset++];
-      if (offset >= seq.length) break;
-      // Length decode
-      int len;
-      final lenByte = seq[offset++];
-      if (lenByte <= 0x7F) {
-        len = lenByte;
-      } else {
-        final numBytes = lenByte & 0x7F;
-        len = 0;
-        for (var i = 0; i < numBytes; i++) {
-          len = (len << 8) | seq[offset++];
-        }
-      }
-      if (tag == 0x02) { // INTEGER
-        if (count == index) {
-          var start = offset;
-          var actualLen = len;
-          // leading 0x00 (sign byte) atla
-          if (actualLen > 0 && seq[start] == 0x00) { start++; actualLen--; }
-          return seq.sublist(start, start + actualLen);
-        }
-        count++;
-      }
-      offset += len;
+      final asn1 = asn1lib.ASN1Parser(der);
+      final cert = asn1.nextObject() as asn1lib.ASN1Sequence;
+      final tbs  = cert.elements![0] as asn1lib.ASN1Sequence;
+      final spki = tbs.elements![6] as asn1lib.ASN1Sequence;
+      final bits = spki.elements![1] as asn1lib.ASN1BitString;
+      final inner = bits.contentBytes().sublist(1);
+      final pubKey = asn1lib.ASN1Parser(inner).nextObject() as asn1lib.ASN1Sequence;
+      final expNode = pubKey.elements![1] as asn1lib.ASN1Integer;
+      return _asn1IntegerToBytes(expNode);
+    } catch (e) {
+      print('[PAIR] extractExponent error: $e');
+      return Uint8List(0);
     }
-    return Uint8List(0);
   }
 
-  // DER X509'dan SubjectPublicKeyInfo içindeki RSA public key SEQUENCE'ini bul
-  static Uint8List? _getSpkiSequence(Uint8List der) {
-    // TLV walker — nested SEQUENCE içinde BITSTRING'i bul
-    // X509: SEQUENCE { SEQUENCE(tbs) { ... SEQUENCE(spki) { ... BITSTRING { 0x00 SEQUENCE { mod exp } } } } ... }
-    final tbs = _firstSequenceContent(_firstSequenceContent(der));
-    if (tbs == null) return null;
-    // tbs içinde BITSTRING'i bul (spki'nin public key kısmı)
-    final bitStr = _findBitStringInSpki(tbs);
-    if (bitStr == null) return null;
-    // BITSTRING içinde: 0x00 prefix + SEQUENCE { INTEGER INTEGER }
-    var offset = 0;
-    if (bitStr[offset] == 0x00) offset++; // unused bits byte
-    if (offset >= bitStr.length || bitStr[offset] != 0x30) return null; // SEQUENCE tag
-    offset++; // skip SEQUENCE tag
-    int len;
-    final lenByte = bitStr[offset++];
-    if (lenByte <= 0x7F) {
-      len = lenByte;
-    } else {
-      final nb = lenByte & 0x7F;
-      len = 0;
-      for (var i = 0; i < nb; i++) len = (len << 8) | bitStr[offset++];
-    }
-    return bitStr.sublist(offset, offset + len);
+  // ASN1Integer'dan leading zero olmadan byte array
+  static Uint8List _asn1IntegerToBytes(asn1lib.ASN1Integer node) {
+    final encoded = node.encodedBytes;
+    var offset = 1; // tag byte atla
+    final lenByte = encoded[offset++];
+    if (lenByte > 0x80) offset += lenByte - 0x80;
+    if (offset < encoded.length && encoded[offset] == 0x00) offset++; // leading zero atla
+    return encoded.sublist(offset);
   }
 
-  static Uint8List? _firstSequenceContent(Uint8List? data) {
-    if (data == null || data.isEmpty || data[0] != 0x30) return null;
-    var offset = 1;
-    int len;
-    final lenByte = data[offset++];
-    if (lenByte <= 0x7F) {
-      len = lenByte;
-    } else {
-      final nb = lenByte & 0x7F;
-      len = 0;
-      for (var i = 0; i < nb; i++) len = (len << 8) | data[offset++];
-    }
-    return data.sublist(offset, offset + len);
-  }
-
-  static Uint8List? _findBitStringInSpki(Uint8List tbs) {
-    // tbs içinde SPKI (SubjectPublicKeyInfo) SEQUENCE'ini bul
-    // Basit yaklaşım: BIT STRING (0x03) tag'ini ara
-    // Ama önce SPKI SEQUENCE'ini bulmak daha doğru
-    // TBS içindeki 7. eleman genelde SPKI (index 6, 0-based)
-    var offset = 0;
-    var elemIdx = 0;
-    while (offset < tbs.length) {
-      final tag = tbs[offset++];
-      if (offset >= tbs.length) break;
-      int len;
-      final lenByte = tbs[offset++];
-      if (lenByte <= 0x7F) {
-        len = lenByte;
-      } else {
-        final nb = lenByte & 0x7F;
-        len = 0;
-        for (var i = 0; i < nb; i++) len = (len << 8) | tbs[offset++];
-      }
-      if (tag == 0x30 && elemIdx == 5) {
-        // SPKI SEQUENCE bulundu — içindeki BITSTRING'i ara
-        final spki = tbs.sublist(offset, offset + len);
-        var spkiOffset = 0;
-        while (spkiOffset < spki.length) {
-          final t = spki[spkiOffset++];
-          int l;
-          final lb = spki[spkiOffset++];
-          if (lb <= 0x7F) { l = lb; }
-          else { final nb = lb & 0x7F; l = 0; for (var i = 0; i < nb; i++) l = (l << 8) | spki[spkiOffset++]; }
-          if (t == 0x03) return spki.sublist(spkiOffset, spkiOffset + l);
-          spkiOffset += l;
-        }
-      }
-      elemIdx++;
-      offset += len;
-    }
-    return null;
-  }
-
-  // DER → PEM sertifika dönüşümü
+    // DER → PEM sertifika dönüşümü
   static String _derToCertPem(Uint8List der) {
     final b64 = base64.encode(der);
     final sb = StringBuffer('-----BEGIN CERTIFICATE-----\n');
