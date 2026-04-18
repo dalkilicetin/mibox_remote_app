@@ -66,7 +66,9 @@ class _RemoteScreenState extends State<RemoteScreen>
       final cert = prefs.getString('atv_cert_${widget.ip}')
                 ?? prefs.getString('mibox_cert_${widget.ip}')
                 ?? prefs.getString('mibox_cert') ?? '';
-      final key  = prefs.getString('atv_key_${widget.ip}')
+      // PKCS#8 tercih et (SecurityContext zorunluluğu), yoksa eski PKCS#1'e düş
+      final key  = prefs.getString('atv_key_pkcs8_${widget.ip}')
+                ?? prefs.getString('atv_key_${widget.ip}')
                 ?? prefs.getString('mibox_key_${widget.ip}')
                 ?? prefs.getString('mibox_key') ?? '';
       if (cert.isEmpty || key.isEmpty) {

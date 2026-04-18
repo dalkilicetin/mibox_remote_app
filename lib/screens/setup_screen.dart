@@ -621,7 +621,10 @@ class _PairingScreenState extends State<PairingScreen> {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('atv_cert_${widget.ip}', _session!.certPem);
         _log('cert kaydedildi: hash=' + _session!.certPem.hashCode.toString() + ' lines=' + _session!.certPem.split('\n').length.toString());
-        await prefs.setString('atv_key_${widget.ip}', _session!.keyPem);
+        // PKCS#1 — ileride gerekirse diye saklanıyor
+        await prefs.setString('atv_key_${widget.ip}', _session!.keyPemPkcs1);
+        // PKCS#8 — SecurityContext.usePrivateKeyBytes() için (remote TLS)
+        await prefs.setString('atv_key_pkcs8_${widget.ip}', _session!.keyPemPkcs8);
         if (mounted) Navigator.pop(context, true);
       } else {
         setState(() { _pairing = false; _status = 'Yanlış kod! Tekrar deneyin:'; });
