@@ -19,14 +19,29 @@ jobs:
           flutter-version: '3.24.0'
           channel: 'stable'
 
-      - name: Get dependencies
+      - name: Flutter pub get
         run: flutter pub get
 
       - name: Build unsigned IPA
         run: |
-          flutter build ios --release --no-codesign
+          # 1. Flutter build (hata varsa burada görünür)
+          flutter build ios --release --no-codesign --verbose || { echo "FLUTTER BUILD FAILED"; exit 1; }
+
+          # 2. xcodebuild archive — hatanın tam yerini loglar
+          xcodebuild archive \
+            -workspace ios/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -archivePath build/ios/Runner.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            -verbose || { echo "XCODEBUILD FAILED"; exit 1; }
+
+          # 3. .app dosyasını paketle
           mkdir -p build/Payload
-          cp -r build/ios/iphoneos/Runner.app build/Payload/
+          cp -r build/ios/Runner.xcarchive/Products/Applications/Runner.app build/Payload/
           cd build && zip -r MiBoxRemote.ipa Payload/
 
       - name: Upload IPA
