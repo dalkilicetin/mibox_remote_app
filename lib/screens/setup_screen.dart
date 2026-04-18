@@ -972,6 +972,8 @@ class _AtvPairingSession {
 
       _log?.call('sendPin: pin=$pin checkByte=${checkByte.toRadixString(16)} pinHash=[${pinHashPart.join(",")}]');
       _log?.call('  clientMod:${clientModulus.length}b clientExp:${clientExp.length}b serverMod:${serverModulus.length}b serverExp:${serverExp.length}b');
+      _log?.call('  cMod=[' + clientModulus.join(',') + ']');
+      _log?.call('  sMod=[' + serverModulus.join(',') + ']');
       if (serverModulus.isEmpty) {
         final preview = _serverCert!.der.sublist(0, _serverCert!.der.length.clamp(0, 30));
         _log?.call('HATA: serverMod bos! DER preview: [' + preview.join(',') + ']');
@@ -1022,19 +1024,21 @@ class _AtvPairingSession {
     _socket!.add(Uint8List.fromList([payload.length, ...payload]));
   }
 
+  // Referans: https://github.com/dart-lang/sdk/issues/39425
+  // Çalışan SSL pinning kodu ile aynı yöntem — stringValue kullan
+  static asn1lib.ASN1Sequence _parseRsaPublicKey(Uint8List der) {
+    final signedCert = asn1lib.ASN1Parser(der).nextObject() as asn1lib.ASN1Sequence;
+    final cert       = signedCert.elements![0] as asn1lib.ASN1Sequence;
+    final pubKeyEl   = cert.elements![6] as asn1lib.ASN1Sequence;  // SubjectPublicKeyInfo
+    final pubKeyBits = pubKeyEl.elements![1] as asn1lib.ASN1BitString;
+    final encoded    = Uint8List.fromList(pubKeyBits.stringValue!);
+    return asn1lib.ASN1Parser(encoded).nextObject() as asn1lib.ASN1Sequence;
+  }
+
   static Uint8List _extractModulusFromDer(Uint8List der) {
     try {
-      final topSeq  = asn1lib.ASN1Parser(der).nextObject() as asn1lib.ASN1Sequence;
-      final tbsCert = topSeq.elements![0] as asn1lib.ASN1Sequence;
-      // SPKI = TBS içinde SEQUENCE { SEQUENCE(AlgId), BIT STRING } olan element
-      final spki = tbsCert.elements!.firstWhere(
-        (e) => e is asn1lib.ASN1Sequence &&
-               e.elements != null &&
-               e.elements!.any((s) => s is asn1lib.ASN1BitString),
-      ) as asn1lib.ASN1Sequence;
-      final bits = spki.elements!.firstWhere((e) => e is asn1lib.ASN1BitString) as asn1lib.ASN1BitString;
-      final rsaSeq = asn1lib.ASN1Parser(Uint8List.fromList(bits.valueBytes())).nextObject() as asn1lib.ASN1Sequence;
-      final modulus = rsaSeq.elements![0] as asn1lib.ASN1Integer;
+      final keySeq = _parseRsaPublicKey(der);
+      final modulus = keySeq.elements![0] as asn1lib.ASN1Integer;
       return _bigIntToUint8List(modulus.valueAsBigInteger);
     } catch (e) {
       print('[PAIR] extractModulus error: $e');
@@ -1044,17 +1048,9 @@ class _AtvPairingSession {
 
   static Uint8List _extractExponentFromDer(Uint8List der) {
     try {
-      final topSeq  = asn1lib.ASN1Parser(der).nextObject() as asn1lib.ASN1Sequence;
-      final tbsCert = topSeq.elements![0] as asn1lib.ASN1Sequence;
-      final spki = tbsCert.elements!.firstWhere(
-        (e) => e is asn1lib.ASN1Sequence &&
-               e.elements != null &&
-               e.elements!.any((s) => s is asn1lib.ASN1BitString),
-      ) as asn1lib.ASN1Sequence;
-      final bits = spki.elements!.firstWhere((e) => e is asn1lib.ASN1BitString) as asn1lib.ASN1BitString;
-      final rsaSeq = asn1lib.ASN1Parser(Uint8List.fromList(bits.valueBytes())).nextObject() as asn1lib.ASN1Sequence;
-      final exponent = rsaSeq.elements![1] as asn1lib.ASN1Integer;
-      return _bigIntToUint8List(exponent.valueAsBigInteger);
+      final keySeq  = _parseRsaPublicKey(der);
+      final exp = keySeq.elements![1] as asn1lib.ASN1Integer;
+      return _bigIntToUint8List(exp.valueAsBigInteger);
     } catch (e) {
       print('[PAIR] extractExponent error: $e');
       return Uint8List(0);
