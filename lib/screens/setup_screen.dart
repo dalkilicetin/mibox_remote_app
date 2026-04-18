@@ -106,34 +106,18 @@ class _SetupScreenState extends State<SetupScreen> {
     final prefs = await SharedPreferences.getInstance();
     final found = <DiscoveredDevice>[];
 
-    // 1. UDP broadcast — APK'dan doğrudan port bilgisi al (hızlı)
+    // 1. UDP broadcast — APK'ı hızlı bul, ama ATV portlarını yine de tara
+    // (APK localhost'tan ATV portlarını doğru okuyamıyor, scan daha güvenilir)
+    final udpFoundIps = <String>{};
     await MiBoxService.discoverDevices(
       timeout: const Duration(seconds: 3),
-      onDeviceFound: (device) async {
-        final ip = device['ip'] as String;
-        final pairingPort = device['atvPairingPort'] as int;
-        final remotePort  = device['atvRemotePort']  as int;
-        final hasCert = (prefs.getString('atv_cert_$ip') ?? '').isNotEmpty;
-        await prefs.setInt('atv_pairing_port_$ip', pairingPort);
-        await prefs.setInt('atv_remote_port_$ip',  remotePort);
-        if (!found.any((d) => d.ip == ip)) {
-          final d = DiscoveredDevice(
-            ip: ip, hasCert: hasCert, hasApk: true,
-            pairingPort: pairingPort, remotePort: remotePort,
-          );
-          found.add(d);
-          if (mounted) setState(() => _devices = List.from(found));
-        }
+      onDeviceFound: (device) {
+        udpFoundIps.add(device['ip'] as String);
       },
     );
 
-    if (found.isNotEmpty) {
-      if (mounted) setState(() { _scanning = false; _scanStatus = '${found.length} cihaz bulundu'; });
-      return;
-    }
-
-    // 2. Fallback: IP taraması — ATV portları + APK portu ayrı ayrı kontrol
-    setState(() => _scanStatus = 'IP taraması yapılıyor...');
+    // 2. IP taraması — UDP bulunan IP'ler önce, sonra tüm subnet
+    setState(() => _scanStatus = 'ATV portları taranıyor...');
     final subnets = await _getSubnets();
     if (subnets.isEmpty) {
       setState(() { _scanning = false; _scanStatus = 'Wi-Fi ağı bulunamadı.'; });
@@ -156,24 +140,30 @@ class _SetupScreenState extends State<SetupScreen> {
         for (var i = start; i <= end; i++) {
           final ip = '$subnet.$i';
           futures.add(() async {
-            // ATV portları ve APK portunu paralel tara
+            // UDP'de bulunan IP ise APK kesin var, sadece ATV portlarını tara
+            final udpFound = udpFoundIps.contains(ip);
+
             final results = await Future.wait([
               _tryPorts(ip, _pairingPorts),
               _tryPorts(ip, _remotePorts),
-              // APK port 9876
-              Socket.connect(ip, 9876, timeout: const Duration(milliseconds: 600))
-                  .then((s) { s.destroy(); return true; })
-                  .catchError((_) => false),
+              // APK port 9876 — UDP'de zaten bulunduysa atla
+              udpFound
+                  ? Future.value(true)
+                  : Socket.connect(ip, 9876,
+                          timeout: const Duration(milliseconds: 600))
+                      .then((s) { s.destroy(); return true; })
+                      .catchError((_) => false),
             ]);
 
             final pairingPort = results[0] as int?;
             final remotePort  = results[1] as int?;
             final hasApk      = results[2] as bool;
 
-            // En az ATV ya da APK portlarından biri açık olmalı
+            // En az bir port açık olmalı
             if (pairingPort == null && remotePort == null && !hasApk) return;
 
             final hasCert = (prefs.getString('atv_cert_$ip') ?? '').isNotEmpty;
+            // Scan'den gelen gerçek portları kaydet (APK'nın söylediğine değil buna güven)
             if (pairingPort != null) await prefs.setInt('atv_pairing_port_$ip', pairingPort);
             if (remotePort  != null) await prefs.setInt('atv_remote_port_$ip',  remotePort);
 
@@ -706,9 +696,10 @@ class _AtvPairingSession {
           context: context,
           onBadCertificate: (cert) { _serverCert = cert; return true; },
           timeout: const Duration(seconds: 5));
-      _socket!.listen((_) {}, onError: (_) {}, onDone: () {});
+      _setupDataListener();
       _sendPairingRequest();
-      await Future.delayed(const Duration(milliseconds: 500));
+      // pairing_request_ack bekle
+      await _readMessage(timeoutMs: 3000);
       return true;
     } catch (e) {
       print('[PAIR] connect error: $e');
@@ -716,7 +707,53 @@ class _AtvPairingSession {
     }
   }
 
+  // Pairing akışı (ATV Remote Protocol v2):
+  // 1. pairing_request (field 10)
+  // 2. pairing_request_ack al
+  // 3. options gönder (field 20) — encoding type + role
+  // 4. options al
+  // 5. configuration gönder (field 30)
+  // 6. configuration_ack al
+  // 7. secret gönder (field 40)
+  // 8. secret_ack al
+
+  final _receivedMessages = <List<int>>[];
+  final _messageCompleter = <Completer<List<int>>>[];
+
+  void _setupDataListener() {
+    _socket!.listen(
+      (data) {
+        // 4 byte length prefix + payload
+        var offset = 0;
+        while (offset + 4 <= data.length) {
+          final len = ByteData.sublistView(
+              Uint8List.fromList(data.sublist(offset, offset + 4)))
+              .getUint32(0, Endian.big);
+          if (offset + 4 + len > data.length) break;
+          final msg = data.sublist(offset + 4, offset + 4 + len);
+          if (_messageCompleter.isNotEmpty) {
+            _messageCompleter.removeAt(0).complete(msg);
+          } else {
+            _receivedMessages.add(msg);
+          }
+          offset += 4 + len;
+        }
+      },
+      onError: (_) {},
+      onDone: () {},
+    );
+  }
+
+  Future<List<int>> _readMessage({int timeoutMs = 3000}) async {
+    if (_receivedMessages.isNotEmpty) return _receivedMessages.removeAt(0);
+    final c = Completer<List<int>>();
+    _messageCompleter.add(c);
+    return c.future.timeout(Duration(milliseconds: timeoutMs),
+        onTimeout: () => throw TimeoutException('No response'));
+  }
+
   void _sendPairingRequest() {
+    // field 10 = pairing_request { field1=service_name, field2=client_name }
     final inner = _ProtoWriter()
       ..writeString(1, _clientName)
       ..writeString(2, _clientId);
@@ -724,9 +761,41 @@ class _AtvPairingSession {
     _sendMessage(outer.toBytes());
   }
 
+  void _sendOptions() {
+    // field 20 = options { input_encodings { type=3(HEX) symbol_length=6 } preferred_role=1(INPUT) }
+    final encoding = _ProtoWriter()
+      ..writeVarint(1, 3)   // ENCODING_TYPE_HEXADECIMAL
+      ..writeVarint(2, 6);  // symbol_length
+    final inner = _ProtoWriter()
+      ..writeBytes(1, encoding.toBytes())  // input_encodings
+      ..writeVarint(2, 1);                 // preferred_role = ROLE_TYPE_INPUT
+    final outer = _ProtoWriter()..writeBytes(20, inner.toBytes());
+    _sendMessage(outer.toBytes());
+  }
+
+  void _sendConfiguration() {
+    // field 30 = configuration { encoding { type=3 symbol_length=6 } client_role=1 }
+    final encoding = _ProtoWriter()
+      ..writeVarint(1, 3)
+      ..writeVarint(2, 6);
+    final inner = _ProtoWriter()
+      ..writeBytes(1, encoding.toBytes())
+      ..writeVarint(2, 1);  // client_role = ROLE_TYPE_INPUT
+    final outer = _ProtoWriter()..writeBytes(30, inner.toBytes());
+    _sendMessage(outer.toBytes());
+  }
+
   Future<bool> sendPin(String pin) async {
     if (_serverCert == null) return false;
     try {
+      // options handshake
+      _sendOptions();
+      await _readMessage(); // options_ack
+
+      _sendConfiguration();
+      await _readMessage(); // configuration_ack
+
+      // Secret hesapla
       final serverDer     = _serverCert!.der;
       final serverModulus = _extractModulusFromDer(serverDer);
       final serverExp     = _extractExponentFromDer(serverDer);
@@ -743,13 +812,22 @@ class _AtvPairingSession {
       final secret = Uint8List(32);
       sha256.doFinal(secret, 0);
 
-      if (secret[0] != int.parse(pin.substring(0, 2), radix: 16)) return false;
+      if (secret[0] != int.parse(pin.substring(0, 2), radix: 16)) {
+        print('[PAIR] Secret mismatch');
+        return false;
+      }
 
+      // field 40 = secret { secret=... }
       final inner = _ProtoWriter()..writeBytes(1, secret);
-      final outer = _ProtoWriter()..writeBytes(11, inner.toBytes());
+      final outer = _ProtoWriter()..writeBytes(40, inner.toBytes());
       _sendMessage(outer.toBytes());
-      await Future.delayed(const Duration(milliseconds: 1000));
+
+      // secret_ack bekle
+      await _readMessage(timeoutMs: 3000);
       return true;
+    } on TimeoutException {
+      print('[PAIR] Timeout waiting for response');
+      return false;
     } catch (e) {
       print('[PAIR] sendPin error: $e');
       return false;
@@ -931,6 +1009,10 @@ class _ProtoWriter {
   void _writeRawVarint(int v) {
     while (v > 0x7F) { _buf.add((v & 0x7F) | 0x80); v >>= 7; }
     _buf.add(v & 0x7F);
+  }
+  void writeVarint(int f, int v) {
+    _writeRawVarint((f << 3) | 0);
+    _writeRawVarint(v);
   }
   Uint8List toBytes() => Uint8List.fromList(_buf);
 }
