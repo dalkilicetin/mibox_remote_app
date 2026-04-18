@@ -607,7 +607,7 @@ class _PairingScreenState extends State<PairingScreen> {
           break;
         } else {
           _log('Port $port hata: $error');
-          await sessionForPort.dispose();
+          sessionForPort.close();
         }
       }
 
@@ -806,7 +806,7 @@ class _AtvPairingSession {
       ip, port, certPem, keyPemPkcs8, keyPemPkcs1, _keyPair);
 
   /// Bağlantıyı kapat (port deneme döngüsünde kullanılır)
-  void dispose() { _socket?.destroy(); }
+  void close() { _socket?.destroy(); }
 
   static Future<_AtvPairingSession> create(String ip, {int pairingPort = 6467}) async {
     // basic_utils ile doğru formatta RSA key pair + self-signed cert üret
