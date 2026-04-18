@@ -610,6 +610,11 @@ class _PairingScreenState extends State<PairingScreen> {
     if (pin.length < 6) return;
     setState(() { _pairing = true; _status = 'Doğrulanıyor...'; });
     try {
+      // sendPin logları _log callback üzerinden gelir, ek olarak status'a da yaz
+      _session!._log = (msg) {
+        print('[PAIR] $msg');
+        if (mounted) setState(() => _logs.add('[PIN] $msg'));
+      };
       final ok = await _session!.sendPin(pin);
       if (ok) {
         final prefs = await SharedPreferences.getInstance();
@@ -689,12 +694,12 @@ class _PairingScreenState extends State<PairingScreen> {
               const CircularProgressIndicator(color: Color(0xFFe94560)),
             ],
 
-            // Debug log paneli — her zaman görünür
+            // Debug log paneli — scrollable
             if (_logs.isNotEmpty) ...[
-              const SizedBox(height: 24),
+              const SizedBox(height: 16),
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.all(10),
+                height: 200,
                 decoration: BoxDecoration(
                   color: const Color(0xFF0a0a1a),
                   borderRadius: BorderRadius.circular(8),
@@ -703,20 +708,38 @@ class _PairingScreenState extends State<PairingScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('DEBUG LOG',
-                        style: TextStyle(color: Color(0xFF4ade80),
-                            fontSize: 10, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 4),
-                    ..._logs.map((l) => Text(l,
-                        style: TextStyle(
-                          color: l.contains('hata') || l.contains('Hata') || l.contains('başarısız')
-                              ? Colors.redAccent
-                              : l.contains('OK') || l.contains('tamamlandı')
-                                  ? const Color(0xFF4ade80)
-                                  : Colors.grey,
-                          fontSize: 11,
-                          fontFamily: 'monospace',
-                        ))),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(8, 6, 8, 2),
+                      child: Row(
+                        children: [
+                          const Text('DEBUG LOG',
+                              style: TextStyle(color: Color(0xFF4ade80),
+                                  fontSize: 10, fontWeight: FontWeight.bold)),
+                          const Spacer(),
+                          GestureDetector(
+                            onTap: () => setState(() => _logs.clear()),
+                            child: const Text('Temizle',
+                                style: TextStyle(color: Colors.grey, fontSize: 9)),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: ListView.builder(
+                        padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                        itemCount: _logs.length,
+                        itemBuilder: (_, i) => Text(_logs[i],
+                            style: TextStyle(
+                              color: _logs[i].contains('mismatch') || _logs[i].contains('hata') || _logs[i].contains('Hata')
+                                  ? Colors.redAccent
+                                  : _logs[i].contains('match=true') || _logs[i].contains('OK') || _logs[i].contains('tamamlandı')
+                                      ? const Color(0xFF4ade80)
+                                      : Colors.grey,
+                              fontSize: 10,
+                              fontFamily: 'monospace',
+                            )),
+                      ),
+                    ),
                   ],
                 ),
               ),
