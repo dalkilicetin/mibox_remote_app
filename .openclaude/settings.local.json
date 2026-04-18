@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flutter pub:*)",
+      "Bash(flutter build:*)",
+      "Bash(flutter doctor:*)",
+      "Bash(./gradlew assembleDebug)",
+      "Bash(dir:*)",
+      "Bash(findstr \"setup_screen.dart\")"
+    ]
+  }
+}
