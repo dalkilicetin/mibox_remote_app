@@ -8,7 +8,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:pointycastle/export.dart' as pc;
 import 'package:basic_utils/basic_utils.dart';
 import '../services/mibox_service.dart';
-import '../services/atv_remote_service.dart';
 import 'remote_screen.dart';
 
 // ── Bulunan cihaz modeli ──────────────────────────────────────────────────────
@@ -909,13 +908,6 @@ class _AtvPairingSession {
   Future<bool> sendPin(String pin) async {
     if (_serverCert == null) return false;
     try {
-      // options handshake
-      _sendOptions();
-      await _readMessage(); // options_ack
-
-      _sendConfiguration();
-      await _readMessage(); // configuration_ack
-
       // Server DER → PEM dönüştür
       final serverDer = _serverCert!.der;
       final serverCertPem = _derToCertPem(serverDer);
@@ -980,8 +972,7 @@ class _AtvPairingSession {
   // DER → PEM sertifika dönüşümü
   static String _derToCertPem(Uint8List der) {
     final b64 = base64.encode(der);
-    final sb = StringBuffer('-----BEGIN CERTIFICATE-----
-');
+    final sb = StringBuffer('-----BEGIN CERTIFICATE-----\n');
     for (var i = 0; i < b64.length; i += 64) {
       sb.writeln(b64.substring(i, i + 64 > b64.length ? b64.length : i + 64));
     }
