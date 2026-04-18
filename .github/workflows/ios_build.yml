@@ -19,19 +19,86 @@ jobs:
           flutter-version: '3.24.0'
           channel: 'stable'
 
-      - name: Get dependencies
-        run: flutter pub get
-
-      - name: Build unsigned IPA
+      - name: Flutter clean ve pub get
         run: |
-          flutter build ios --release --no-codesign
+          flutter clean
+          flutter pub get
+          flutter pub get --packages-dir
+
+      - name: Analyze — öncesi hata kontrolü
+        run: |
+          echo "=== Flutter doctor ==="
+          flutter doctor -v
+          echo ""
+          echo "=== Dart analiz ==="
+          dart analyze . || true
+
+      - name: Build unsigned IPA (verbose)
+        run: |
+          echo "=== 1. Flutter build iOS (verbose) ==="
+          flutter build ios --release --no-codesign --verbose 2>&1 | tee build.log || {
+            echo "HATA: flutter build başarısız"
+            tail -100 build.log
+            exit 1
+          }
+
+      - name: xcodebuild archive — detaylı debug
+        run: |
+          echo "=== 2. xcodebuild archive (verbose) ==="
+          cd ios
+          pod repo update 2>&1 || true
+          cd ..
+          xcodebuild archive \
+            -workspace ios/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -archivePath build/ios/Runner.xcarchive \
+            -allowProvisioningUpdates \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            -verbose \
+            -showBuildSettings 2>&1 | tee xcodebuild.log || {
+            echo ""
+            echo "╔════════════════════════════════════════╗"
+            echo "║         XCODEBUILD HATA ÖZETI          ║"
+            echo "╚════════════════════════════════════════╝"
+            echo ""
+            grep -i "error\|failed\|undefined\|not found" xcodebuild.log | tail -20 || true
+            echo ""
+            echo "Son 150 satır:"
+            tail -150 xcodebuild.log
+            exit 1
+          }
+
+      - name: İPA paketleme
+        run: |
+          echo "=== 3. İPA dosyası oluşturuluyor ==="
+          if [ ! -d "build/ios/Runner.xcarchive/Products/Applications/Runner.app" ]; then
+            echo "HATA: Runner.app bulunamadı!"
+            ls -la build/ios/Runner.xcarchive/Products/Applications/ || true
+            exit 1
+          fi
           mkdir -p build/Payload
-          cp -r build/ios/iphoneos/Runner.app build/Payload/
+          cp -r build/ios/Runner.xcarchive/Products/Applications/Runner.app build/Payload/
           cd build && zip -r MiBoxRemote.ipa Payload/
+          ls -lh MiBoxRemote.ipa
+          cd ..
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: MiBoxRemote-ipa
           path: build/MiBoxRemote.ipa
+          retention-days: 7
+
+      - name: Upload build logs (hata durumunda)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-debug
+          path: |
+            build.log
+            xcodebuild.log
           retention-days: 7
