@@ -972,6 +972,11 @@ class _AtvPairingSession {
 
       _log?.call('sendPin: pin=$pin checkByte=${checkByte.toRadixString(16)} pinHash=[${pinHashPart.join(",")}]');
       _log?.call('  clientMod:${clientModulus.length}b clientExp:${clientExp.length}b serverMod:${serverModulus.length}b serverExp:${serverExp.length}b');
+      if (serverModulus.isEmpty) {
+        final preview = _serverCert!.der.sublist(0, _serverCert!.der.length.clamp(0, 30));
+        _log?.call('HATA: serverMod bos! DER preview: [' + preview.join(',') + ']');
+        return false;
+      }
 
       // SHA256(clientMod + clientExp + serverMod + serverExp + pinHashPart)
       final hashInput = Uint8List.fromList([
@@ -1017,19 +1022,20 @@ class _AtvPairingSession {
     _socket!.add(Uint8List.fromList([payload.length, ...payload]));
   }
 
-  // DER X509'dan RSA public key modulus/exponent — asn1lib kullanarak
   static Uint8List _extractModulusFromDer(Uint8List der) {
     try {
-      final asn1 = asn1lib.ASN1Parser(der);
-      final cert = asn1.nextObject() as asn1lib.ASN1Sequence;        // Certificate
-      final tbs  = cert.elements![0] as asn1lib.ASN1Sequence;        // TBSCertificate
-      final spki = tbs.elements![6] as asn1lib.ASN1Sequence;         // SubjectPublicKeyInfo
-      final bits = spki.elements![1] as asn1lib.ASN1BitString;       // BIT STRING
-      // BIT STRING içeriği: 0x00 prefix + SEQUENCE { INTEGER mod, INTEGER exp }
-      final inner = bits.contentBytes().sublist(1);
-      final pubKey = asn1lib.ASN1Parser(inner).nextObject() as asn1lib.ASN1Sequence;
-      final modNode = pubKey.elements![0] as asn1lib.ASN1Integer;
-      return _asn1IntegerToBytes(modNode);
+      final topSeq  = asn1lib.ASN1Parser(der).nextObject() as asn1lib.ASN1Sequence;
+      final tbsCert = topSeq.elements![0] as asn1lib.ASN1Sequence;
+      // SPKI = TBS içinde SEQUENCE { SEQUENCE(AlgId), BIT STRING } olan element
+      final spki = tbsCert.elements!.firstWhere(
+        (e) => e is asn1lib.ASN1Sequence &&
+               e.elements != null &&
+               e.elements!.any((s) => s is asn1lib.ASN1BitString),
+      ) as asn1lib.ASN1Sequence;
+      final bits = spki.elements!.firstWhere((e) => e is asn1lib.ASN1BitString) as asn1lib.ASN1BitString;
+      final rsaSeq = asn1lib.ASN1Parser(Uint8List.fromList(bits.valueBytes())).nextObject() as asn1lib.ASN1Sequence;
+      final modulus = rsaSeq.elements![0] as asn1lib.ASN1Integer;
+      return _bigIntToUint8List(modulus.valueAsBigInteger);
     } catch (e) {
       print('[PAIR] extractModulus error: $e');
       return Uint8List(0);
@@ -1038,15 +1044,17 @@ class _AtvPairingSession {
 
   static Uint8List _extractExponentFromDer(Uint8List der) {
     try {
-      final asn1 = asn1lib.ASN1Parser(der);
-      final cert = asn1.nextObject() as asn1lib.ASN1Sequence;
-      final tbs  = cert.elements![0] as asn1lib.ASN1Sequence;
-      final spki = tbs.elements![6] as asn1lib.ASN1Sequence;
-      final bits = spki.elements![1] as asn1lib.ASN1BitString;
-      final inner = bits.contentBytes().sublist(1);
-      final pubKey = asn1lib.ASN1Parser(inner).nextObject() as asn1lib.ASN1Sequence;
-      final expNode = pubKey.elements![1] as asn1lib.ASN1Integer;
-      return _asn1IntegerToBytes(expNode);
+      final topSeq  = asn1lib.ASN1Parser(der).nextObject() as asn1lib.ASN1Sequence;
+      final tbsCert = topSeq.elements![0] as asn1lib.ASN1Sequence;
+      final spki = tbsCert.elements!.firstWhere(
+        (e) => e is asn1lib.ASN1Sequence &&
+               e.elements != null &&
+               e.elements!.any((s) => s is asn1lib.ASN1BitString),
+      ) as asn1lib.ASN1Sequence;
+      final bits = spki.elements!.firstWhere((e) => e is asn1lib.ASN1BitString) as asn1lib.ASN1BitString;
+      final rsaSeq = asn1lib.ASN1Parser(Uint8List.fromList(bits.valueBytes())).nextObject() as asn1lib.ASN1Sequence;
+      final exponent = rsaSeq.elements![1] as asn1lib.ASN1Integer;
+      return _bigIntToUint8List(exponent.valueAsBigInteger);
     } catch (e) {
       print('[PAIR] extractExponent error: $e');
       return Uint8List(0);
@@ -1076,13 +1084,16 @@ class _AtvPairingSession {
 
   // BigInt → Uint8List (big-endian, unsigned)
   static Uint8List _bigIntToUint8List(BigInt n) {
-    var hex = n.toRadixString(16);
+    var hex = n.abs().toRadixString(16);
     if (hex.length % 2 != 0) hex = '0$hex';
     final bytes = Uint8List(hex.length ~/ 2);
     for (var i = 0; i < bytes.length; i++) {
       bytes[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
     }
-    return bytes;
+    // Leading zero kaldır (DER sign byte)
+    var start = 0;
+    while (start < bytes.length - 1 && bytes[start] == 0) start++;
+    return start == 0 ? bytes : bytes.sublist(start);
   }
 
   void dispose() => _socket?.destroy();
