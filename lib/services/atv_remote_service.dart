@@ -55,8 +55,8 @@ class AtvRemoteService {
 
       _socket!.listen(
         _onData,
-        onError: (_) => _onDisconnect(),
-        onDone:  ()  => _onDisconnect(),
+        onError: (e) { print('[ATV] Socket error: $e'); _onDisconnect(); },
+        onDone:  ()  { print('[ATV] Socket closed'); _onDisconnect(); },
       );
 
       // Ping her 5 sn
@@ -85,17 +85,29 @@ class AtvRemoteService {
 
   void _handleMessage(List<int> msg) {
     if (msg.isEmpty) return;
-    print('[ATV] ← msg(${msg.length}b): ${msg.take(16).toList()}');
+    final hex = msg.take(16).map((b) => b.toRadixString(16).padLeft(2,'0')).join(' ');
+    print('[ATV] ← msg(${msg.length}b): $hex');
 
-    // field 1 = remote_configure — TV bağlantıda config gönderir, biz de respond ederiz
-    if (msg[0] == 0x0A) {
+    final tag = msg[0];
+    // field 1 (0x0A) = remote_configure — TV ilk mesajı gönderir
+    if (tag == 0x0A) {
+      print('[ATV] → configure response gönderiliyor');
       _sendConfigure();
-      // Ardından set_active gönder
       Future.delayed(const Duration(milliseconds: 100), _sendSetActive);
     }
-    // field 9 = ping_request — pong gönder
-    else if (msg[0] == 0x4A) {
+    // field 8 (0x42) = ping_request
+    else if (tag == 0x42) {
+      print('[ATV] → pong gönderiliyor');
       _sendPong(msg);
+    }
+    // field 9 (0x4A) = ping_response — yoksay
+    else if (tag == 0x4A) {}
+    // field 2 (0x12) = remote_set_active response — bağlantı hazır
+    else if (tag == 0x12) {
+      print('[ATV] ✓ Handshake tamamlandı');
+    }
+    else {
+      print('[ATV] bilinmeyen tag: 0x${tag.toRadixString(16)}');
     }
   }
 

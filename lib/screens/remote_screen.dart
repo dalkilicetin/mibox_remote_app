@@ -29,6 +29,7 @@ class _RemoteScreenState extends State<RemoteScreen>
   bool _apkConnected = false;
   final AtvRemoteService _atv = AtvRemoteService();
   bool _atvConnected = false;
+  final List<String> _atvLogs = [];
 
   bool get _hasApk => widget.service != null;
 
@@ -53,6 +54,7 @@ class _RemoteScreenState extends State<RemoteScreen>
   }
 
   Future<void> _initAtv() async {
+    _addLog('ATV bağlanılıyor: ${widget.ip}:${widget.remotePort}');
     try {
       final prefs = await SharedPreferences.getInstance();
       final cert = prefs.getString('atv_cert_${widget.ip}')
@@ -61,15 +63,68 @@ class _RemoteScreenState extends State<RemoteScreen>
       final key  = prefs.getString('atv_key_${widget.ip}')
                 ?? prefs.getString('mibox_key_${widget.ip}')
                 ?? prefs.getString('mibox_key') ?? '';
-      if (cert.isNotEmpty && key.isNotEmpty) {
-        await prefs.setString('atv_cert_${widget.ip}', cert);
-        await prefs.setString('atv_key_${widget.ip}', key);
-        _atv.setCertificates(cert, key);
-        await _atv.connect(widget.ip, remotePort: widget.remotePort);
+      if (cert.isEmpty || key.isEmpty) {
+        _addLog('HATA: Sertifika bulunamadı! Yeniden eşleştir.');
+        return;
       }
+      _addLog('Sertifika bulundu (${cert.length}b), bağlanılıyor...');
+      _atv.setCertificates(cert, key);
+      final ok = await _atv.connect(widget.ip, remotePort: widget.remotePort);
+      _addLog(ok ? 'ATV bağlandı ✓' : 'ATV bağlantısı başarısız!');
     } catch (e) {
+      _addLog('Init hatası: $e');
       print('[ATV] Init error: $e');
     }
+  }
+
+  void _addLog(String msg) {
+    print('[ATV-UI] $msg');
+    if (mounted) setState(() {
+      _atvLogs.add('[${DateTime.now().second}s] $msg');
+      if (_atvLogs.length > 20) _atvLogs.removeAt(0);
+    });
+  }
+
+  void _showDebugDialog() {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF12122a),
+        title: Row(
+          children: [
+            const Text('ATV Debug', style: TextStyle(color: Colors.white, fontSize: 14)),
+            const Spacer(),
+            TextButton(
+              onPressed: () { Navigator.pop(context); _initAtv(); },
+              child: const Text('Yeniden Bağlan', style: TextStyle(color: Color(0xFFe94560), fontSize: 11)),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 300,
+          child: ListView.builder(
+            itemCount: _atvLogs.length,
+            itemBuilder: (_, i) => Text(
+              _atvLogs[i],
+              style: TextStyle(
+                color: _atvLogs[i].contains('HATA') || _atvLogs[i].contains('başarısız')
+                    ? Colors.redAccent
+                    : _atvLogs[i].contains('✓') ? const Color(0xFF4ade80) : Colors.grey,
+                fontSize: 11,
+                fontFamily: 'monospace',
+              ),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Kapat', style: TextStyle(color: Colors.grey)),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -119,6 +174,11 @@ class _RemoteScreenState extends State<RemoteScreen>
                     const Spacer(),
                     Text(widget.ip,
                         style: const TextStyle(color: Colors.grey, fontSize: 11)),
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      onTap: () => _showDebugDialog(),
+                      child: const Icon(Icons.bug_report, color: Colors.grey, size: 18),
+                    ),
                     const SizedBox(width: 8),
                     GestureDetector(
                       onTap: () => Navigator.pop(context),
