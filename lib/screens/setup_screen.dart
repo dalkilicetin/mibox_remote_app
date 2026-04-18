@@ -908,18 +908,11 @@ class _AtvPairingSession {
   Future<bool> sendPin(String pin) async {
     if (_serverCert == null) return false;
     try {
-      // Server DER → PEM dönüştür
+      // Server DER'den modulus/exponent doğrudan parse et
+      // basic_utils API belirsizliği olmadan güvenli yol
       final serverDer = _serverCert!.der;
-      final serverCertPem = _derToCertPem(serverDer);
-
-      // getModulusFromRSAX509Pem: X509Utils'in güvenilir metodu
-      final serverModulusBigInt = X509Utils.getModulusFromRSAX509Pem(serverCertPem);
-      final serverModulus = _bigIntToUint8List(serverModulusBigInt);
-
-      // Server exponent — RSA sertifikalarında her zaman 65537
-      // (X509CertificateData.publicKeyData.exponent tipi Object? olduğu için
-      //  cast yerine standard değeri kullanıyoruz)
-      final serverExp = _bigIntToUint8List(BigInt.from(65537));
+      final serverModulus = _extractModulusFromDer(serverDer);
+      final serverExp     = _extractExponentFromDer(serverDer);
 
       final clientModulus = CryptoUtils.rsaPublicKeyModulusToBytes(_keyPair.publicKey);
       final clientExp     = CryptoUtils.rsaPublicKeyExponentToBytes(_keyPair.publicKey);
@@ -936,8 +929,11 @@ class _AtvPairingSession {
       hashInput.setRange(offset, offset += serverModulus.length, serverModulus);
       hashInput.setRange(offset, offset += serverExp.length, serverExp);
       hashInput.setRange(offset, offset += pinBytes.length, pinBytes);
-      final secret = Uint8List.fromList(
-          CryptoUtils.getHash(hashInput, algorithmName: 'SHA-256'));
+      // pointycastle ile SHA-256 — basic_utils API belirsizliği olmadan
+      final sha256 = pc.SHA256Digest();
+      final secret = Uint8List(sha256.digestSize);
+      sha256.update(hashInput, 0, hashInput.length);
+      sha256.doFinal(secret, 0);
 
       if (secret[0] != int.parse(pin.substring(0, 2), radix: 16)) {
         print('[PAIR] Secret mismatch');
@@ -967,6 +963,138 @@ class _AtvPairingSession {
     lenBytes.setUint32(0, payload.length, Endian.big);
     _socket!.add(lenBytes.buffer.asUint8List());
     _socket!.add(payload);
+  }
+
+  // DER X509'dan RSA public key modulus/exponent extract
+  // X.509 DER yapısı: SEQUENCE { SEQUENCE { ... spki ... } BITSTRING { 0x00 SEQUENCE { INTEGER(mod) INTEGER(exp) } } }
+  static Uint8List _extractModulusFromDer(Uint8List der) {
+    try {
+      final pubKeySeq = _getSpkiSequence(der);
+      if (pubKeySeq == null) return Uint8List(0);
+      return _derIntToBytes(pubKeySeq, 0);
+    } catch (_) { return Uint8List(0); }
+  }
+
+  static Uint8List _extractExponentFromDer(Uint8List der) {
+    try {
+      final pubKeySeq = _getSpkiSequence(der);
+      if (pubKeySeq == null) return Uint8List(0);
+      return _derIntToBytes(pubKeySeq, 1);
+    } catch (_) { return Uint8List(0); }
+  }
+
+  // DER SEQUENCE içindeki n'inci INTEGER'ı byte array olarak döndür
+  static Uint8List _derIntToBytes(Uint8List seq, int index) {
+    var offset = 0;
+    var count = 0;
+    while (offset < seq.length) {
+      final tag = seq[offset++];
+      if (offset >= seq.length) break;
+      // Length decode
+      int len;
+      final lenByte = seq[offset++];
+      if (lenByte <= 0x7F) {
+        len = lenByte;
+      } else {
+        final numBytes = lenByte & 0x7F;
+        len = 0;
+        for (var i = 0; i < numBytes; i++) {
+          len = (len << 8) | seq[offset++];
+        }
+      }
+      if (tag == 0x02) { // INTEGER
+        if (count == index) {
+          var start = offset;
+          var actualLen = len;
+          // leading 0x00 (sign byte) atla
+          if (actualLen > 0 && seq[start] == 0x00) { start++; actualLen--; }
+          return seq.sublist(start, start + actualLen);
+        }
+        count++;
+      }
+      offset += len;
+    }
+    return Uint8List(0);
+  }
+
+  // DER X509'dan SubjectPublicKeyInfo içindeki RSA public key SEQUENCE'ini bul
+  static Uint8List? _getSpkiSequence(Uint8List der) {
+    // TLV walker — nested SEQUENCE içinde BITSTRING'i bul
+    // X509: SEQUENCE { SEQUENCE(tbs) { ... SEQUENCE(spki) { ... BITSTRING { 0x00 SEQUENCE { mod exp } } } } ... }
+    final tbs = _firstSequenceContent(_firstSequenceContent(der));
+    if (tbs == null) return null;
+    // tbs içinde BITSTRING'i bul (spki'nin public key kısmı)
+    final bitStr = _findBitStringInSpki(tbs);
+    if (bitStr == null) return null;
+    // BITSTRING içinde: 0x00 prefix + SEQUENCE { INTEGER INTEGER }
+    var offset = 0;
+    if (bitStr[offset] == 0x00) offset++; // unused bits byte
+    if (offset >= bitStr.length || bitStr[offset] != 0x30) return null; // SEQUENCE tag
+    offset++; // skip SEQUENCE tag
+    int len;
+    final lenByte = bitStr[offset++];
+    if (lenByte <= 0x7F) {
+      len = lenByte;
+    } else {
+      final nb = lenByte & 0x7F;
+      len = 0;
+      for (var i = 0; i < nb; i++) len = (len << 8) | bitStr[offset++];
+    }
+    return bitStr.sublist(offset, offset + len);
+  }
+
+  static Uint8List? _firstSequenceContent(Uint8List? data) {
+    if (data == null || data.isEmpty || data[0] != 0x30) return null;
+    var offset = 1;
+    int len;
+    final lenByte = data[offset++];
+    if (lenByte <= 0x7F) {
+      len = lenByte;
+    } else {
+      final nb = lenByte & 0x7F;
+      len = 0;
+      for (var i = 0; i < nb; i++) len = (len << 8) | data[offset++];
+    }
+    return data.sublist(offset, offset + len);
+  }
+
+  static Uint8List? _findBitStringInSpki(Uint8List tbs) {
+    // tbs içinde SPKI (SubjectPublicKeyInfo) SEQUENCE'ini bul
+    // Basit yaklaşım: BIT STRING (0x03) tag'ini ara
+    // Ama önce SPKI SEQUENCE'ini bulmak daha doğru
+    // TBS içindeki 7. eleman genelde SPKI (index 6, 0-based)
+    var offset = 0;
+    var elemIdx = 0;
+    while (offset < tbs.length) {
+      final tag = tbs[offset++];
+      if (offset >= tbs.length) break;
+      int len;
+      final lenByte = tbs[offset++];
+      if (lenByte <= 0x7F) {
+        len = lenByte;
+      } else {
+        final nb = lenByte & 0x7F;
+        len = 0;
+        for (var i = 0; i < nb; i++) len = (len << 8) | tbs[offset++];
+      }
+      if (tag == 0x30 && elemIdx == 5) {
+        // SPKI SEQUENCE bulundu — içindeki BITSTRING'i ara
+        final spki = tbs.sublist(offset, offset + len);
+        var spkiOffset = 0;
+        while (spkiOffset < spki.length) {
+          final t = spki[spkiOffset++];
+          int l;
+          final lb = spki[spkiOffset++];
+          if (lb <= 0x7F) { l = lb; }
+          else { final nb = lb & 0x7F; l = 0; for (var i = 0; i < nb; i++) l = (l << 8) | spki[spkiOffset++]; }
+          if (t == 0x03) return spki.sublist(spkiOffset, spkiOffset + l);
+          spkiOffset += l;
+        }
+      }
+      elemIdx++;
+      offset += len;
+    }
+    return null;
   }
 
   // DER → PEM sertifika dönüşümü
