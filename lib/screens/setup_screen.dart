@@ -834,10 +834,13 @@ class _AtvPairingSession {
 
   /// PEM string → DER bytes
   static Uint8List _pemToDer(String pem) {
-    final lines = pem.split('\n')
+    // \r\n ve tüm whitespace'i temizle, sadece base64 karakterlerini bırak
+    final b64 = pem
+        .replaceAll('\r', '')
+        .split('\n')
         .where((l) => l.isNotEmpty && !l.startsWith('-----'))
         .join();
-    return base64.decode(lines);
+    return base64.decode(b64);
   }
 
   /// RSA private key → PKCS#1 DER bytes (TraditionalOpenSSL — referansla aynı)
