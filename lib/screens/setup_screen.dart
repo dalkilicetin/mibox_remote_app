@@ -927,14 +927,19 @@ class _AtvPairingSession {
       final clientExp     = CryptoUtils.rsaPublicKeyExponentToBytes(_keyPair.publicKey);
       final pinBytes      = _hexToBytes(pin.substring(4, 6));
 
-      final sha256 = pc.SHA256Digest();
-      sha256.update(clientModulus, 0, clientModulus.length);
-      sha256.update(clientExp, 0, clientExp.length);
-      sha256.update(serverModulus, 0, serverModulus.length);
-      sha256.update(serverExp, 0, serverExp.length);
-      sha256.update(pinBytes, 0, pinBytes.length);
-      final secret = Uint8List(32);
-      sha256.doFinal(secret, 0);
+      // SHA256(clientMod + clientExp + serverMod + serverExp + pinBytes)
+      final hashInput = Uint8List(
+        clientModulus.length + clientExp.length +
+        serverModulus.length + serverExp.length + pinBytes.length
+      );
+      var offset = 0;
+      hashInput.setRange(offset, offset += clientModulus.length, clientModulus);
+      hashInput.setRange(offset, offset += clientExp.length, clientExp);
+      hashInput.setRange(offset, offset += serverModulus.length, serverModulus);
+      hashInput.setRange(offset, offset += serverExp.length, serverExp);
+      hashInput.setRange(offset, offset += pinBytes.length, pinBytes);
+      final secret = Uint8List.fromList(
+          CryptoUtils.getHash(hashInput, algorithmName: 'SHA-256'));
 
       if (secret[0] != int.parse(pin.substring(0, 2), radix: 16)) {
         print('[PAIR] Secret mismatch');

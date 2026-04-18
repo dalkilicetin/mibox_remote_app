@@ -12,7 +12,7 @@ dependencies:
   shared_preferences: ^2.5.3
   permission_handler: ^12.0.1
   cupertino_icons: ^1.0.8
-  pointycastle: ^3.7.3
+  pointycastle: ^4.0.0
   asn1lib: ^1.5.4
   basic_utils: ^5.8.2
 
