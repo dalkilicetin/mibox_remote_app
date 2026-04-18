@@ -66,18 +66,16 @@ class _RemoteScreenState extends State<RemoteScreen>
     _addLog('ATV bağlanılıyor: ${widget.ip}:${widget.remotePort}');
     try {
       final prefs = await SharedPreferences.getInstance();
-      final certB64 = prefs.getString('atv_cert_${widget.ip}') ?? '';
-      final keyB64  = prefs.getString('atv_key_${widget.ip}') ?? '';
-      if (certB64.isEmpty || keyB64.isEmpty) {
+      final cert = prefs.getString('atv_cert_${widget.ip}') ?? '';
+      final key  = prefs.getString('atv_key_${widget.ip}') ?? '';
+      if (cert.isEmpty || key.isEmpty) {
         _addLog('HATA: Sertifika bulunamadı! Yeniden eşleştir.');
         return;
       }
-      // base64 → DER bytes
-      final certDer = base64.decode(certB64);
-      final keyDer  = base64.decode(keyB64);
-      _addLog('Sertifika bulundu: certDer=\${certDer.length}b keyDer=\${keyDer.length}b');
-      _addLog('REMOTE certB64[0:20]: \${certB64.substring(0, certB64.length > 20 ? 20 : certB64.length)}');
-      _atv.setCertificatesDer(certDer, keyDer);
+      _addLog('Sertifika bulundu: \${cert.split("\n").length} satır');
+      _addLog('cert[0]: \${cert.split("\n").first}');
+      _addLog('key[0]:  \${key.split("\n").first}');
+      _atv.setCertificates(cert, key);
       final ok = await _atv.connect(widget.ip, remotePort: widget.remotePort);
       _addLog(ok ? 'ATV bağlandı ✓' : 'ATV bağlantısı başarısız!');
       // Race condition kontrolü: connect true döndü ama stream gelmedi mi?

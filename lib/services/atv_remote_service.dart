@@ -38,25 +38,25 @@ class AtvRemoteService {
   // Varint length prefix için buffer
   final List<int> _recvBuf = [];
 
-  Uint8List _certDer = Uint8List(0);
-  Uint8List _keyDer  = Uint8List(0);
+  String _certPem = '';
+  String _keyPem  = '';
 
-  void setCertificatesDer(Uint8List cert, Uint8List key) {
-    _certDer = cert;
-    _keyDer  = key;
+  void setCertificates(String cert, String key) {
+    _certPem = cert;
+    _keyPem  = key;
   }
 
   Future<bool> connect(String ip, {int remotePort = 6466}) async {
     _ip = ip;
     _remotePort = remotePort;
-    if (_certDer.isEmpty || _keyDer.isEmpty) {
+    if (_certPem.isEmpty || _keyPem.isEmpty) {
       _log('Sertifika yok — pairing gerekli');
       return false;
     }
     try {
       final ctx = SecurityContext(withTrustedRoots: false);
-      ctx.useCertificateChainBytes(_certDer);  // DER
-      ctx.usePrivateKeyBytes(_keyDer);           // PKCS#1 DER
+      ctx.useCertificateChainBytes(utf8.encode(_certPem)); // PEM: BEGIN CERTIFICATE
+      ctx.usePrivateKeyBytes(utf8.encode(_keyPem));          // PEM: BEGIN PRIVATE KEY (PKCS#8)
       _socket = await SecureSocket.connect(
         ip, _remotePort,
         context: ctx,
