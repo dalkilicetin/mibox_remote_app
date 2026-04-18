@@ -18,44 +18,42 @@ jobs:
         with:
           flutter-version: '3.27.4'
           channel: 'stable'
+          cache: true
+
+      - name: Pub cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ hashFiles('pubspec.yaml') }}
+          restore-keys: pub-
+
+      - name: CocoaPods cache
+        uses: actions/cache@v4
+        with:
+          path: ios/Pods
+          key: pods-${{ hashFiles('ios/Podfile.lock') }}
+          restore-keys: pods-
 
       - name: Flutter pub get
         run: flutter pub get
 
-      - name: Xcode code signing kapat (proje dosyasında)
+      - name: Flutter build iOS
         run: |
-          # pbxproj içinde CODE_SIGNING_REQUIRED ve DEVELOPMENT_TEAM'i patch et
-          PBXPROJ="ios/Runner.xcodeproj/project.pbxproj"
-          sed -i '' \
-            -e 's/CODE_SIGN_IDENTITY = ".*"/CODE_SIGN_IDENTITY = ""/g' \
-            -e 's/CODE_SIGNING_REQUIRED = YES/CODE_SIGNING_REQUIRED = NO/g' \
-            -e 's/DEVELOPMENT_TEAM = [A-Z0-9]*;/DEVELOPMENT_TEAM = "";/g' \
-            -e 's/PROVISIONING_PROFILE_SPECIFIER = ".*"/PROVISIONING_PROFILE_SPECIFIER = ""/g' \
-            "$PBXPROJ"
-          echo "pbxproj patch tamam"
+          flutter build ios --release --no-codesign 2>&1 | tee flutter_build.log
+          BUILD_EXIT=${PIPESTATUS[0]}
+          if [ $BUILD_EXIT -ne 0 ]; then
+            tail -150 flutter_build.log
+            exit 1
+          fi
 
-      - name: Build unsigned IPA
+      - name: IPA oluştur
         run: |
-          # 1. Flutter build
-          flutter build ios --release --no-codesign --verbose || { echo "FLUTTER BUILD FAILED"; exit 1; }
-
-          # 2. xcodebuild archive
-          xcodebuild archive \
-            -workspace ios/Runner.xcworkspace \
-            -scheme Runner \
-            -configuration Release \
-            -archivePath build/ios/Runner.xcarchive \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            DEVELOPMENT_TEAM="" \
-            PROVISIONING_PROFILE_SPECIFIER="" \
-            -verbose || { echo "XCODEBUILD FAILED"; exit 1; }
-
-          # 3. .app dosyasını paketle
+          APP_PATH=$(find build/ios -name "Runner.app" -type d | head -1)
+          if [ -z "$APP_PATH" ]; then echo "HATA: Runner.app bulunamadı"; exit 1; fi
           mkdir -p build/Payload
-          cp -r build/ios/Runner.xcarchive/Products/Applications/Runner.app build/Payload/
+          cp -r "$APP_PATH" build/Payload/
           cd build && zip -r MiBoxRemote.ipa Payload/
+          ls -lh MiBoxRemote.ipa
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
@@ -63,3 +61,11 @@ jobs:
           name: MiBoxRemote-ipa
           path: build/MiBoxRemote.ipa
           retention-days: 7
+
+      - name: Upload build log (sadece hata)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-build-log
+          path: flutter_build.log
+          retention-days: 3

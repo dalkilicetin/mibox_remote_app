@@ -78,6 +78,10 @@ class _RemoteScreenState extends State<RemoteScreen>
       _addLog('cert hash: ' + cert.hashCode.toString());
       _addLog('key[0]: ' + key.split('\n').first);
       _addLog('certLines: ' + cert.split('\n').length.toString());
+      // Hash karşılaştırması — pairing ile remote aynı sertifika mı?
+      final savedHash = cert.hashCode;
+      _addLog('Remote cert hash: $savedHash (${cert.split("\n").length} satır)');
+      _addLog('Remote key[0]: ${key.split("\n").first}');
       _atv.setCertificates(cert, key);
       final ok = await _atv.connect(widget.ip, remotePort: widget.remotePort);
       _addLog(ok ? 'ATV bağlandı ✓' : 'ATV bağlantısı başarısız!');
