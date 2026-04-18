@@ -785,7 +785,7 @@ class _AtvPairingSession {
       rsaPrivate, csrPem, 3650,
       notBefore: DateTime.now().subtract(const Duration(days: 1)),
     );
-    final keyPem = CryptoUtils.encodeRSAPrivateKeyToPem(rsaPrivate);
+    final keyPem = _encodeRsaPrivateKeyPkcs1(rsaPrivate);
 
     return _AtvPairingSession._(ip, pairingPort, certPem, keyPem,
         pc.AsymmetricKeyPair<pc.RSAPublicKey, pc.RSAPrivateKey>(rsaPublic, rsaPrivate));
@@ -1025,6 +1025,44 @@ class _AtvPairingSession {
   void _sendMessage(Uint8List payload) {
     if (_socket == null) return;
     _socket!.add(Uint8List.fromList([payload.length, ...payload]));
+  }
+
+  /// PKCS#1 RSA private key PEM encoder.
+  /// CryptoUtils.encodeRSAPrivateKeyToPem() PKCS#8 ("BEGIN PRIVATE KEY") üretiyor,
+  /// ATV bu formatı reddediyor. PKCS#1 = "BEGIN RSA PRIVATE KEY" gerekli.
+  static String _encodeRsaPrivateKeyPkcs1(pc.RSAPrivateKey key) {
+    // RFC 3447 PKCS#1 RSAPrivateKey ::= SEQUENCE {
+    //   version           Version,          -- 0
+    //   modulus           INTEGER,          -- n
+    //   publicExponent    INTEGER,          -- e
+    //   privateExponent   INTEGER,          -- d
+    //   prime1            INTEGER,          -- p
+    //   prime2            INTEGER,          -- q
+    //   exponent1         INTEGER,          -- d mod (p-1)
+    //   exponent2         INTEGER,          -- d mod (q-1)
+    //   coefficient       INTEGER,          -- (inverse of q) mod p
+    // }
+    final p = key.p!;
+    final q = key.q!;
+    final d = key.privateExponent!;
+    final seq = asn1lib.ASN1Sequence()
+      ..add(asn1lib.ASN1Integer(BigInt.zero))
+      ..add(asn1lib.ASN1Integer(key.modulus!))
+      ..add(asn1lib.ASN1Integer(key.exponent!))
+      ..add(asn1lib.ASN1Integer(d))
+      ..add(asn1lib.ASN1Integer(p))
+      ..add(asn1lib.ASN1Integer(q))
+      ..add(asn1lib.ASN1Integer(d % (p - BigInt.one)))
+      ..add(asn1lib.ASN1Integer(d % (q - BigInt.one)))
+      ..add(asn1lib.ASN1Integer(q.modInverse(p)));
+    final der = seq.encodedBytes;
+    final b64 = base64.encode(der);
+    // 64 karakterlik satırlar — PEM standardı
+    final wrapped = StringBuffer();
+    for (var i = 0; i < b64.length; i += 64) {
+      wrapped.writeln(b64.substring(i, (i + 64).clamp(0, b64.length)));
+    }
+    return '-----BEGIN RSA PRIVATE KEY-----\n${wrapped}-----END RSA PRIVATE KEY-----\n';
   }
 
   // Referans: https://github.com/dart-lang/sdk/issues/39425

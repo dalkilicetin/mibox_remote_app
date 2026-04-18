@@ -181,9 +181,21 @@ class AtvRemoteService {
 
   // Pong: RemoteMessage { remote_ping_response=9: { val1: same as request } }
   void _sendPong(List<int> pingMsg) {
-    // field 9 = 0x4A, ping_response field 9 = 0x4A
-    // basit: gelen val1'i geri yansıt
-    _sendMessage(Uint8List.fromList([0x4A, 0x02, 0x08, 0x00]));
+    // pingMsg gövdesi: [0x42, <varint len>, 0x08, <val1 varint...>]
+    // field 1 (0x08) = val1 — ping'den aynı değeri yansıt
+    int val1 = 0;
+    // varint prefix'i atla: index 0 = tag(0x42), index 1 = len, index 2 = 0x08, index 3+ = val1
+    if (pingMsg.length >= 4 && pingMsg[2] == 0x08) {
+      int shift = 0;
+      for (var i = 3; i < pingMsg.length && i < 3 + 5; i++) {
+        val1 |= (pingMsg[i] & 0x7F) << shift;
+        shift += 7;
+        if ((pingMsg[i] & 0x80) == 0) break;
+      }
+    }
+    final inner = _ProtoWriter()..writeVarint(1, val1);
+    final outer = _ProtoWriter()..writeBytes(9, inner.toBytes());
+    _sendMessage(outer.toBytes());
   }
 
   // Ping: RemoteMessage { remote_ping_request=8: { val1: 1 } }
