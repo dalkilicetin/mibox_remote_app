@@ -658,7 +658,7 @@ class _PairingScreenState extends State<PairingScreen> {
   }
 
   @override
-  void dispose() { _logSink?.flush(); _logSink?.close(); _session?.dispose(); _pinController.dispose(); super.dispose(); }
+  void dispose() { _logSink?.flush(); _logSink?.close(); _session?.close(); _pinController.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
