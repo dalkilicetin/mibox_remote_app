@@ -598,18 +598,26 @@ class _PairingScreenState extends State<PairingScreen> {
       ];
       _log('Denenecek portlar: $portsToTry');
 
+      // Sertifika tek seferinde üretiliyor — her port denemesinde yeniden üretilmemeli
+      // Aksi halde TV'ye gönderilen sertifika ile prefs'e kaydedilen farklı olur
+      _log('Sertifika üretiliyor (tek seferlik)...');
+      final sharedSession = await _AtvPairingSession.create(widget.ip);
+
       int? workingPort;
       for (final port in portsToTry) {
         _log('Port $port deneniyor...');
         setState(() => _status = 'Bağlanılıyor... (port $port)');
-        _session = await _AtvPairingSession.create(widget.ip, pairingPort: port);
-        final error = await _session!.connectWithLog(_log);
+        // Aynı sertifikayla farklı porta bağlan
+        final sessionForPort = sharedSession.withPort(port);
+        final error = await sessionForPort.connectWithLog(_log);
         if (error == null) {
+          _session = sessionForPort;
           workingPort = port;
           _log('Port $port OK — PIN bekleniyor');
           break;
         } else {
           _log('Port $port hata: $error');
+          await sessionForPort.dispose();
         }
       }
 
@@ -804,6 +812,13 @@ class _AtvPairingSession {
 
   _AtvPairingSession._(this.ip, this.pairingPort, this.certPem,
       this.keyPemPkcs8, this.keyPemPkcs1, this._keyPair);
+
+  /// Aynı sertifikayla farklı porta bağlanmak için kopya oluştur
+  _AtvPairingSession withPort(int port) => _AtvPairingSession._(
+      ip, port, certPem, keyPemPkcs8, keyPemPkcs1, _keyPair);
+
+  /// Bağlantıyı kapat (port deneme döngüsünde kullanılır)
+  void dispose() { _socket?.destroy(); }
 
   static Future<_AtvPairingSession> create(String ip, {int pairingPort = 6467}) async {
     // basic_utils ile doğru formatta RSA key pair + self-signed cert üret
