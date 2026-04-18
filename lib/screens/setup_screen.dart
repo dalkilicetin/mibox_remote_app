@@ -200,17 +200,8 @@ class _SetupScreenState extends State<SetupScreen> {
   // ── Bağlan ─────────────────────────────────────────────────────────────────
   Future<void> _connectTo(DiscoveredDevice device) async {
     final prefs = await SharedPreferences.getInstance();
-    final cert = prefs.getString('atv_cert_${device.ip}')
-        ?? prefs.getString('mibox_cert_${device.ip}')
-        ?? prefs.getString('mibox_cert') ?? '';
-    final key = prefs.getString('atv_key_${device.ip}')
-        ?? prefs.getString('mibox_key_${device.ip}')
-        ?? prefs.getString('mibox_key') ?? '';
-
-    if (cert.isNotEmpty && key.isNotEmpty) {
-      await prefs.setString('atv_cert_${device.ip}', cert);
-      await prefs.setString('atv_key_${device.ip}', key);
-    }
+    final cert = prefs.getString('atv_cert_${device.ip}') ?? '';
+    final key  = prefs.getString('atv_key_${device.ip}') ?? '';
 
     if (cert.isEmpty || key.isEmpty) {
       if (!mounted) return;
@@ -296,7 +287,7 @@ class _SetupScreenState extends State<SetupScreen> {
     );
 
     if (ip == null || ip.isEmpty) return;
-    final cert = prefs.getString('atv_cert_$ip') ?? prefs.getString('mibox_cert_$ip') ?? '';
+    final cert = prefs.getString('atv_cert_$ip') ?? '';
     final pairingPort = prefs.getInt('atv_pairing_port_$ip') ?? 6467;
     final remotePort  = prefs.getInt('atv_remote_port_$ip')  ?? 6466;
     // APK portunu hızlıca kontrol et
@@ -382,8 +373,7 @@ class _SetupScreenState extends State<SetupScreen> {
                             final prefs = await SharedPreferences.getInstance();
                             await prefs.remove('atv_cert_${d.ip}');
                             await prefs.remove('atv_key_${d.ip}');
-                            await prefs.remove('mibox_cert_${d.ip}');
-                            await prefs.remove('mibox_key_${d.ip}');
+                            await prefs.remove('atv_key_pkcs8_${d.ip}');
                             if (!mounted) return;
                             final result = await Navigator.push<bool>(
                               context,
@@ -652,10 +642,8 @@ class _PairingScreenState extends State<PairingScreen> {
         // Tutarlılık kontrolü: remote_screen aynı cert'i kullanacak
         _log('PAIRING cert[0:20]: ' + _session!.certPem.replaceAll('\n','').substring(0, 20));
         _log('PAIRING keyPkcs8[0:20]: ' + _session!.keyPemPkcs8.replaceAll('\n','').substring(0, 20));
-        // PKCS#1 — ileride gerekirse diye saklanıyor
-        await prefs.setString('atv_key_${widget.ip}', _session!.keyPemPkcs1);
-        // PKCS#8 — SecurityContext.usePrivateKeyBytes() için (remote TLS)
-        await prefs.setString('atv_key_pkcs8_${widget.ip}', _session!.keyPemPkcs8);
+        // Tek key kaynağı: PKCS#8 — hem pairing hem remote için
+        await prefs.setString('atv_key_${widget.ip}', _session!.keyPemPkcs8);
         // TV'nin sertifikayı TrustedStore'una yazması için bekle
         _log('TV kayıt bekleniyor (3s)...');
         await Future.delayed(const Duration(seconds: 3));

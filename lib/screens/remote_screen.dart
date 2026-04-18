@@ -65,14 +65,8 @@ class _RemoteScreenState extends State<RemoteScreen>
     _addLog('ATV bağlanılıyor: ${widget.ip}:${widget.remotePort}');
     try {
       final prefs = await SharedPreferences.getInstance();
-      final cert = prefs.getString('atv_cert_${widget.ip}')
-                ?? prefs.getString('mibox_cert_${widget.ip}')
-                ?? prefs.getString('mibox_cert') ?? '';
-      // PKCS#8 tercih et (SecurityContext zorunluluğu), yoksa eski PKCS#1'e düş
-      final key  = prefs.getString('atv_key_pkcs8_${widget.ip}')
-                ?? prefs.getString('atv_key_${widget.ip}')
-                ?? prefs.getString('mibox_key_${widget.ip}')
-                ?? prefs.getString('mibox_key') ?? '';
+      final cert = prefs.getString('atv_cert_${widget.ip}') ?? '';
+      final key  = prefs.getString('atv_key_${widget.ip}') ?? '';
       if (cert.isEmpty || key.isEmpty) {
         _addLog('HATA: Sertifika bulunamadı! Yeniden eşleştir.');
         return;
