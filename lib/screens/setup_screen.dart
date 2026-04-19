@@ -841,11 +841,36 @@ class _AtvPairingSession {
   Future<bool> sendPin(String pin) async {
     if (_serverCert == null) return false;
     try {
+      // 1. TV'nin DER formatındaki sertifikasını standart PEM formatına çevir
       final serverPem = _derToCertPem(_serverCert!.der);
       
+      // 2. basic_utils ile X.509 sertifikasını parse et
       final serverParsedCert = X509Utils.x509CertificateFromPem(serverPem);
-      final serverPubKey = serverParsedCert.publicKey as pc.RSAPublicKey;
 
+      // 3. Sertifikanın içinden Public Key verisini Hex olarak al
+      final pubKeyHex = serverParsedCert.publicKeyData.bytes;
+      if (pubKeyHex == null) {
+        _log?.call('HATA: Sertifikadan public key okunamadı.');
+        return false;
+      }
+
+      // 4. Hex string'i temizle ve saf byte dizisine (DER) çevir
+      final cleanHex = pubKeyHex.replaceAll(RegExp(r'[^0-9a-fA-F]'), '');
+      final pubKeyBytes = _hexToBytes(cleanHex);
+
+      // 5. Byte dizisini standart PUBLIC KEY PEM formatına çevir
+      final b64 = base64.encode(pubKeyBytes);
+      final sb = StringBuffer('-----BEGIN PUBLIC KEY-----\n');
+      for (var i = 0; i < b64.length; i += 64) {
+        sb.writeln(b64.substring(i, i + 64 > b64.length ? b64.length : i + 64));
+      }
+      sb.write('-----END PUBLIC KEY-----');
+      final pubKeyPem = sb.toString();
+
+      // 6. basic_utils ile PEM'i parse edip RSA Public Key nesnesini oluştur
+      final serverPubKey = CryptoUtils.rsaPublicKeyFromPem(pubKeyPem);
+
+      // 7. Modulus ve Exponent'leri saf byte dizilerine çevir
       final serverModulus = _bigIntToBytes(serverPubKey.modulus!);
       final serverExp     = _bigIntToBytes(serverPubKey.exponent!);
 
@@ -857,6 +882,7 @@ class _AtvPairingSession {
 
       _log?.call('sendPin: checkByte=${checkByte.toRadixString(16)}');
       
+      // 8. Hash İçin Birleştirme
       final hashInput = Uint8List.fromList([
         ...clientModulus, ...clientExp,
         ...serverModulus, ...serverExp,
@@ -864,11 +890,14 @@ class _AtvPairingSession {
       ]);
       final secret = pc.SHA256Digest().process(hashInput);
 
+      _log?.call('  secret[0]=${secret[0].toRadixString(16)} expected=${checkByte.toRadixString(16)} match=${secret[0]==checkByte}');
+
       if (secret[0] != checkByte) {
         _log?.call('Secret mismatch! Hash hesaplaması başarısız.');
         return false;
       }
 
+      // 9. Doğrulanmış Secret'ı TV'ye Gönder
       final secretPayload = Uint8List.fromList([
         8, 2, 16, 200, 1, 
         98,               

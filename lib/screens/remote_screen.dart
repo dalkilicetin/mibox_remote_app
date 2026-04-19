@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../services/mibox_service.dart';
 import '../services/atv_remote_service.dart';
 import 'air_mouse_screen.dart';
@@ -27,6 +28,9 @@ class RemoteScreen extends StatefulWidget {
 
 class _RemoteScreenState extends State<RemoteScreen>
     with SingleTickerProviderStateMixin {
+      
+  final _secureStorage = const FlutterSecureStorage();
+
   late TabController _tabController;
   bool _apkConnected = false;
   final AtvRemoteService _atv = AtvRemoteService();
@@ -65,23 +69,27 @@ class _RemoteScreenState extends State<RemoteScreen>
     _atv.onLog = (msg) { if (mounted) _addLog(msg); };
     _addLog('ATV bağlanılıyor: ${widget.ip}:${widget.remotePort}');
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final cert = prefs.getString('atv_cert_${widget.ip}') ?? '';
-      final key  = prefs.getString('atv_key_${widget.ip}') ?? '';
+      final cert = await _secureStorage.read(key: 'atv_cert_${widget.ip}') ?? '';
+      final key  = await _secureStorage.read(key: 'atv_key_${widget.ip}') ?? '';
+      
       if (cert.isEmpty || key.isEmpty) {
         _addLog('HATA: Sertifika bulunamadı! Yeniden eşleştir.');
         return;
       }
-      _addLog('Sertifika bulundu: \${cert.split("\n").length} satır');
-      _addLog('cert[0]: \${cert.split("\n").first}');
-      _addLog('key[0]:  \${key.split("\n").first}');
+      
+      _addLog('Sertifika bulundu: ${cert.split("\n").length} satır');
+      _addLog('cert[0]: ${cert.split("\n").first}');
+      _addLog('key[0]:  ${key.split("\n").first}');
+      
       _atv.setCertificates(cert, key);
+      
       final ok = await _atv.connect(widget.ip, remotePort: widget.remotePort);
       _addLog(ok ? 'ATV bağlandı ✓' : 'ATV bağlantısı başarısız!');
+      
       // Race condition kontrolü: connect true döndü ama stream gelmedi mi?
       if (ok && mounted) {
         await Future.delayed(const Duration(milliseconds: 200));
-        _addLog('200ms sonra isConnected: \${_atv.isConnected}, _atvConnected: \$_atvConnected');
+        _addLog('200ms sonra isConnected: ${_atv.isConnected}, _atvConnected: $_atvConnected');
         if (_atv.isConnected && !_atvConnected) {
           _addLog('RACE CONDITION! Manuel setState yapılıyor...');
           setState(() => _atvConnected = true);
@@ -100,7 +108,7 @@ class _RemoteScreenState extends State<RemoteScreen>
     try {
       _logSink ??= File('/data/local/tmp/atv_remote.log')
           .openWrite(mode: FileMode.writeOnly)
-          ..writeln('=== ATV Remote Log \${DateTime.now()} ===');
+          ..writeln('=== ATV Remote Log ${DateTime.now()} ===');
       _logSink!.writeln(line);
     } catch (_) {}
     if (mounted) setState(() {
@@ -112,8 +120,6 @@ class _RemoteScreenState extends State<RemoteScreen>
       }
     });
   }
-
-
 
   @override
   void dispose() {
