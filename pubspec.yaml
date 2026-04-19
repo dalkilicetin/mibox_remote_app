@@ -15,8 +15,6 @@ dependencies:
   pointycastle: ^4.0.0
   asn1lib: ^1.5.4
   basic_utils: ^5.8.2
-  androidtvremote: ^1.0.0
-
 
 dev_dependencies:
   flutter_test:
