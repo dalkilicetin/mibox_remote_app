@@ -107,7 +107,6 @@ class _SetupScreenState extends State<SetupScreen> {
     final found = <DiscoveredDevice>[];
 
     // 1. UDP broadcast — APK'ı hızlı bul, ama ATV portlarını yine de tara
-    // (APK localhost'tan ATV portlarını doğru okuyamıyor, scan daha güvenilir)
     final udpFoundIps = <String>{};
     await MiBoxService.discoverDevices(
       timeout: const Duration(seconds: 3),
@@ -140,13 +139,11 @@ class _SetupScreenState extends State<SetupScreen> {
         for (var i = start; i <= end; i++) {
           final ip = '$subnet.$i';
           futures.add(() async {
-            // UDP'de bulunan IP ise APK kesin var, sadece ATV portlarını tara
             final udpFound = udpFoundIps.contains(ip);
 
             final results = await Future.wait([
               _tryPorts(ip, _pairingPorts),
               _tryPorts(ip, _remotePorts),
-              // APK port 9876 — UDP'de zaten bulunduysa atla
               udpFound
                   ? Future.value(true)
                   : Socket.connect(ip, 9876,
@@ -159,11 +156,9 @@ class _SetupScreenState extends State<SetupScreen> {
             final remotePort  = results[1] as int?;
             final hasApk      = results[2] as bool;
 
-            // En az bir port açık olmalı
             if (pairingPort == null && remotePort == null && !hasApk) return;
 
             final hasCert = (prefs.getString('atv_cert_$ip') ?? '').isNotEmpty;
-            // Scan'den gelen gerçek portları kaydet (APK'nın söylediğine değil buna güven)
             if (pairingPort != null) await prefs.setInt('atv_pairing_port_$ip', pairingPort);
             if (remotePort  != null) await prefs.setInt('atv_remote_port_$ip',  remotePort);
 
@@ -217,7 +212,6 @@ class _SetupScreenState extends State<SetupScreen> {
   }
 
   Future<void> _launchRemote(DiscoveredDevice device) async {
-    // APK varsa bağlan, yoksa null service ile sadece ATV mod
     MiBoxService? service;
     int remotePort = device.remotePort;
 
@@ -225,7 +219,6 @@ class _SetupScreenState extends State<SetupScreen> {
       service = MiBoxService();
       final ok = await service.connect(device.ip);
       if (!ok) service = null;
-      // APK'dan gelen gerçek ATV portunu kullan
       if (service != null) remotePort = service.atvRemotePort;
     }
 
@@ -238,7 +231,7 @@ class _SetupScreenState extends State<SetupScreen> {
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(builder: (_) => RemoteScreen(
-        service: service,      // null ise sadece ATV mod
+        service: service,
         ip: device.ip,
         remotePort: remotePort,
         pairingPort: device.pairingPort,
@@ -290,7 +283,6 @@ class _SetupScreenState extends State<SetupScreen> {
     final cert = prefs.getString('atv_cert_$ip') ?? '';
     final pairingPort = prefs.getInt('atv_pairing_port_$ip') ?? 6467;
     final remotePort  = prefs.getInt('atv_remote_port_$ip')  ?? 6466;
-    // APK portunu hızlıca kontrol et
     bool hasApk = false;
     try {
       final s = await Socket.connect(ip, 9876, timeout: const Duration(seconds: 2));
@@ -472,7 +464,6 @@ class _DeviceCard extends StatelessWidget {
             const SizedBox(height: 2),
             Row(
               children: [
-                // Eşleştirme durumu
                 Text(
                   device.hasCert ? '✓ Eşleştirildi' : 'Eşleştirilmedi',
                   style: TextStyle(
@@ -481,7 +472,6 @@ class _DeviceCard extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 8),
-                // APK durumu
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
                   decoration: BoxDecoration(
@@ -548,8 +538,6 @@ class _PairingScreenState extends State<PairingScreen> {
   IOSink? _logSink;
 
   Future<void> _initLogFile() async {
-    // /data/local/tmp/ — adb pull çalışır, WRITE_EXTERNAL_STORAGE izni gerekmez
-    // Komut: adb pull /data/local/tmp/atv_pairing.log
     for (final path in [
       '/data/local/tmp/atv_pairing.log',
       '/data/local/tmp/atv_pairing_${DateTime.now().millisecondsSinceEpoch}.log',
@@ -588,8 +576,6 @@ class _PairingScreenState extends State<PairingScreen> {
       ];
       _log('Denenecek portlar: $portsToTry');
 
-      // Sertifika tek seferinde üretiliyor — her port denemesinde yeniden üretilmemeli
-      // Aksi halde TV'ye gönderilen sertifika ile prefs'e kaydedilen farklı olur
       _log('Sertifika üretiliyor (tek seferlik)...');
       final sharedSession = await _AtvPairingSession.create(widget.ip);
 
@@ -597,7 +583,6 @@ class _PairingScreenState extends State<PairingScreen> {
       for (final port in portsToTry) {
         _log('Port $port deneniyor...');
         setState(() => _status = 'Bağlanılıyor... (port $port)');
-        // Aynı sertifikayla farklı porta bağlan
         final sessionForPort = sharedSession.withPort(port);
         final error = await sessionForPort.connectWithLog(_log);
         if (error == null) {
@@ -629,7 +614,6 @@ class _PairingScreenState extends State<PairingScreen> {
     if (pin.length < 6) return;
     setState(() { _pairing = true; _status = 'Doğrulanıyor...'; });
     try {
-      // sendPin logları _log callback üzerinden gelir, ek olarak status'a da yaz
       _session!._log = (msg) {
         print('[PAIR] $msg');
         if (mounted) setState(() => _logs.add('[PIN] $msg'));
@@ -637,13 +621,11 @@ class _PairingScreenState extends State<PairingScreen> {
       final ok = await _session!.sendPin(pin);
       if (ok) {
         final prefs = await SharedPreferences.getInstance();
-        // PEM string olarak kaydet — doğrudan SecurityContext'e verilebilir
         await prefs.setString('atv_cert_${widget.ip}', _session!.certPem);
         await prefs.setString('atv_key_${widget.ip}',  _session!.keyPem);
         _log('cert kaydedildi: ${_session!.certPem.split("\n").length} satır');
         _log('PAIRING cert[0]: ${_session!.certPem.split("\n").first}');
         _log('PAIRING key[0]:  ${_session!.keyPem.split("\n").first}');
-        // TV'nin sertifikayı TrustedStore'una yazması için bekle
         _log('TV kayıt bekleniyor (3s)...');
         await Future.delayed(const Duration(seconds: 3));
         if (mounted) Navigator.pop(context, true);
@@ -720,7 +702,6 @@ class _PairingScreenState extends State<PairingScreen> {
               const CircularProgressIndicator(color: Color(0xFFe94560)),
             ],
 
-            // Debug log paneli — scrollable
             if (_logs.isNotEmpty) ...[
               const SizedBox(height: 16),
               Container(
@@ -781,9 +762,7 @@ class _PairingScreenState extends State<PairingScreen> {
 class _AtvPairingSession {
   final String ip;
   final int pairingPort;
-  /// X.509 sertifika PEM — BEGIN CERTIFICATE
   final String certPem;
-  /// PKCS#8 private key PEM — BEGIN PRIVATE KEY — Flutter SecurityContext zorunluluğu
   final String keyPem;
   final pc.AsymmetricKeyPair<pc.RSAPublicKey, pc.RSAPrivateKey> _keyPair;
 
@@ -796,7 +775,6 @@ class _AtvPairingSession {
   _AtvPairingSession._(this.ip, this.pairingPort, this.certPem,
       this.keyPem, this._keyPair);
 
-  /// Aynı sertifikayla farklı porta bağlanmak için kopya oluştur
   _AtvPairingSession withPort(int port) => _AtvPairingSession._(
       ip, port, certPem, keyPem, _keyPair);
 
@@ -812,12 +790,10 @@ class _AtvPairingSession {
     );
     final notBefore = DateTime.now().subtract(const Duration(days: 1));
     print('[PAIR] cert notBefore: $notBefore');
-    // certPem: BEGIN CERTIFICATE — useCertificateChainBytes kabul eder
     final certPem = X509Utils.generateSelfSignedCertificate(
       rsaPrivate, csrPem, 3650,
       notBefore: notBefore,
     );
-    // keyPem: BEGIN PRIVATE KEY (PKCS#8) — usePrivateKeyBytes kabul eder
     final keyPem = CryptoUtils.encodeRSAPrivateKeyToPem(rsaPrivate);
 
     print('[PAIR] certPem: ${certPem.length}chars keyPem: ${keyPem.length}chars');
@@ -826,14 +802,13 @@ class _AtvPairingSession {
         pc.AsymmetricKeyPair<pc.RSAPublicKey, pc.RSAPrivateKey>(rsaPublic, rsaPrivate));
   }
 
-  // null = başarılı, String = hata mesajı
   Future<String?> connectWithLog(void Function(String) log) async {
     _log = log;
     try {
       log('TLS bağlantısı kuruluyor → $ip:$pairingPort');
       final context = SecurityContext(withTrustedRoots: false);
-      context.useCertificateChainBytes(utf8.encode(certPem)); // PEM: BEGIN CERTIFICATE
-      context.usePrivateKeyBytes(utf8.encode(keyPem));          // PEM: BEGIN PRIVATE KEY (PKCS#8)
+      context.useCertificateChainBytes(utf8.encode(certPem)); 
+      context.usePrivateKeyBytes(utf8.encode(keyPem));          
       _socket = await SecureSocket.connect(ip, pairingPort,
           context: context,
           onBadCertificate: (cert) { _serverCert = cert; return true; },
@@ -841,12 +816,10 @@ class _AtvPairingSession {
       log('TLS OK — sunucu sertifikası alındı: ${_serverCert != null}');
       _setupDataListener();
 
-      // 1. pairing_request
       final reqBytes = _buildPairingRequestBytes();
       log('→ pairing_request gönderiliyor: ${reqBytes.length} byte = [${reqBytes.join(",")}]');
       _sendMessage(reqBytes);
 
-      // 2. pairing_request_ack
       try {
         final ack = await _readMessage(timeoutMs: 3000);
         log('← pairing_request_ack: ${ack.length} byte');
@@ -854,11 +827,9 @@ class _AtvPairingSession {
         return 'pairing_request_ack alınamadı: $e';
       }
 
-      // 3. options
       _sendOptions();
       log('→ options gönderildi');
 
-      // 4. options (TV'den) — bu mesajdan sonra TV PIN'i gösterir
       try {
         final opts = await _readMessage(timeoutMs: 5000);
         log('← options alındı: ${opts.length} byte — TV PIN gösteriyor olmalı');
@@ -866,11 +837,9 @@ class _AtvPairingSession {
         return 'options alınamadı: $e';
       }
 
-      // 5. configuration
       _sendConfiguration();
       log('→ configuration gönderildi');
 
-      // 6. configuration_ack
       try {
         final cfgAck = await _readMessage(timeoutMs: 3000);
         log('← configuration_ack: ${cfgAck.length} byte');
@@ -879,34 +848,22 @@ class _AtvPairingSession {
       }
 
       log('Handshake tamamlandı — PIN girişi bekleniyor');
-      return null; // başarılı
+      return null; 
     } catch (e) {
       return 'Bağlantı hatası: $e';
     }
   }
 
-  // Eski connect() — geriye dönük uyumluluk
   Future<bool> connect() async {
     final err = await connectWithLog((msg) => print('[PAIR] $msg'));
     return err == null;
   }
-
-  // Pairing akışı (ATV Remote Protocol v2):
-  // 1. pairing_request (field 10)
-  // 2. pairing_request_ack al
-  // 3. options gönder (field 20) — encoding type + role
-  // 4. options al
-  // 5. configuration gönder (field 30)
-  // 6. configuration_ack al
-  // 7. secret gönder (field 40)
-  // 8. secret_ack al
 
   final _receivedMessages = <List<int>>[];
   final _messageCompleter = <Completer<List<int>>>[];
 
   void Function(String)? _log;
 
-  // Pairing port (6467) için gelen veri buffer'ı — TCP fragmentation'a karşı
   final _recvBuffer = <int>[];
 
   Timer? _flushTimer;
@@ -925,10 +882,9 @@ class _AtvPairingSession {
   }
 
   void _processBuffer() {
-    // 1-byte length prefix parse — yeterli veri geldikçe mesaj çıkar
     while (_recvBuffer.isNotEmpty) {
       final expectedLen = _recvBuffer[0];
-      if (_recvBuffer.length < 1 + expectedLen) break; // henüz tam gelmedi
+      if (_recvBuffer.length < 1 + expectedLen) break; 
       final msg = _recvBuffer.sublist(1, 1 + expectedLen);
       _recvBuffer.removeRange(0, 1 + expectedLen);
       _log?.call('  mesaj: $expectedLen byte = [${msg.join(",")}]');
@@ -948,18 +904,14 @@ class _AtvPairingSession {
         onTimeout: () => throw TimeoutException('No response'));
   }
 
-  // ATV Remote Protocol v2 — referans: https://github.com/Aymkdn/assistant-freebox-cloud/wiki
-  // Her mesaj önce 4 byte big-endian length, sonra payload
-  // Tüm payload byte dizileri dokümantasyondan alınmıştır
-
   Uint8List _buildPairingRequestBytes() {
     final serviceBytes = utf8.encode(_clientName);
     final clientBytes  = utf8.encode(_clientId);
     final innerLen = 2 + serviceBytes.length + 2 + clientBytes.length;
     return Uint8List.fromList([
-      8, 2,          // protocol_version = 2
-      16, 200, 1,    // status = STATUS_OK
-      82,            // field 10 (pairing_request), wire type 2
+      8, 2,          
+      16, 200, 1,    
+      82,            
       innerLen,
       10, serviceBytes.length, ...serviceBytes,
       18, clientBytes.length,  ...clientBytes,
@@ -969,56 +921,46 @@ class _AtvPairingSession {
   void _sendPairingRequest() => _sendMessage(_buildPairingRequestBytes());
 
   void _sendOptions() {
-    // Exact bytes from spec:
-    // [8,2,16,200,1] header + [162,1] field20 + [8] inner_len + [10,4,8,3,16,6,24,1]
     _sendMessage(Uint8List.fromList([
-      8, 2, 16, 200, 1,   // protocol_version=2, status=OK
-      162, 1,             // field 20 (options), wire type 2 — varint encoded
-      8,                  // inner message length
-      10, 4, 8, 3, 16, 6, // input_encodings: type=HEX(3), symbol_length=6
-      24, 1,              // preferred_role = INPUT(1)
+      8, 2, 16, 200, 1,   
+      162, 1,             
+      8,                  
+      10, 4, 8, 3, 16, 6, 
+      24, 1,              
     ]));
   }
 
   void _sendConfiguration() {
-    // Exact bytes from spec:
-    // [8,2,16,200,1] header + [242,1] field30 + [8] inner_len + [10,4,8,3,16,6,16,1]
     _sendMessage(Uint8List.fromList([
-      8, 2, 16, 200, 1,   // protocol_version=2, status=OK
-      242, 1,             // field 30 (configuration), wire type 2 — varint encoded
-      8,                  // inner message length
-      10, 4, 8, 3, 16, 6, // encoding: type=HEX(3), symbol_length=6
-      16, 1,              // client_role = INPUT(1)
+      8, 2, 16, 200, 1,   
+      242, 1,             
+      8,                  
+      10, 4, 8, 3, 16, 6, 
+      16, 1,              
     ]));
   }
 
   Future<bool> sendPin(String pin) async {
     if (_serverCert == null) return false;
     try {
-      // Server DER'den modulus/exponent doğrudan parse et
-      // basic_utils API belirsizliği olmadan güvenli yol
       final serverDer = _serverCert!.der;
       final serverModulus = _extractModulusFromDer(serverDer);
       final serverExp     = _extractExponentFromDer(serverDer);
 
-      // Client key — leading zero olmadan (Java'daki removeLeadingNullBytes gibi)
       final clientModulus = _bigIntToUint8List(_keyPair.publicKey.modulus!);
       final clientExp     = _bigIntToUint8List(_keyPair.publicKey.exponent!);
-      // PIN: ilk 2 char = checkByte, kalan 4 char = hash input (2 byte)
       final checkByte   = int.parse(pin.substring(0, 2), radix: 16);
-      final pinHashPart = _hexToBytes(pin.substring(2)); // son 4 hex char = 2 byte
+      final pinHashPart = _hexToBytes(pin.substring(2)); 
 
       _log?.call('sendPin: pin=$pin checkByte=${checkByte.toRadixString(16)} pinHash=[${pinHashPart.join(",")}]');
       _log?.call('  clientMod:${clientModulus.length}b clientExp:${clientExp.length}b serverMod:${serverModulus.length}b serverExp:${serverExp.length}b');
-      _log?.call('  cMod=[' + clientModulus.join(',') + ']');
-      _log?.call('  sMod=[' + serverModulus.join(',') + ']');
+      
       if (serverModulus.isEmpty) {
         final preview = _serverCert!.der.sublist(0, _serverCert!.der.length.clamp(0, 30));
         _log?.call('HATA: serverMod bos! DER preview: [' + preview.join(',') + ']');
         return false;
       }
 
-      // SHA256(clientMod + clientExp + serverMod + serverExp + pinHashPart)
       final hashInput = Uint8List.fromList([
         ...clientModulus, ...clientExp,
         ...serverModulus, ...serverExp,
@@ -1033,12 +975,11 @@ class _AtvPairingSession {
         return false;
       }
 
-      // Field 12 (pairing_secret) = (12<<3)|2 = 98
       final secretPayload = Uint8List.fromList([
-        8, 2, 16, 200, 1, // protocol_version=2, status=OK
-        98,               // field 12 (pairing_secret), wire type 2
-        34,               // inner length
-        10, 32,           // field 1 (secret bytes), length 32
+        8, 2, 16, 200, 1, 
+        98,               
+        34,               
+        10, 32,           
         ...secret,
       ]);
       _sendMessage(secretPayload);
@@ -1055,23 +996,28 @@ class _AtvPairingSession {
     }
   }
 
-  // Port 6467 (pairing): 1-byte length prefix VAR
-  // Port 6466 (remote): 4-byte big-endian length prefix VAR
   void _sendMessage(Uint8List payload) {
     if (_socket == null) return;
     _socket!.add(Uint8List.fromList([payload.length, ...payload]));
   }
 
-
-
-  // Referans: https://github.com/dart-lang/sdk/issues/39425
-  // Çalışan SSL pinning kodu ile aynı yöntem — stringValue kullan
+  // -----------------------------------------------------------------------------------
+  // KRİTİK DÜZELTME ALANI: ASN.1 BitString ayrıştırması
+  // -----------------------------------------------------------------------------------
   static asn1lib.ASN1Sequence _parseRsaPublicKey(Uint8List der) {
     final signedCert = asn1lib.ASN1Parser(der).nextObject() as asn1lib.ASN1Sequence;
     final cert       = signedCert.elements![0] as asn1lib.ASN1Sequence;
     final pubKeyEl   = cert.elements![6] as asn1lib.ASN1Sequence;  // SubjectPublicKeyInfo
     final pubKeyBits = pubKeyEl.elements![1] as asn1lib.ASN1BitString;
-    final encoded    = Uint8List.fromList(pubKeyBits.stringValue!);
+    
+    // HATA BURADAYDI: stringValue özelliği, ikili (binary) byte dizisini UTF-8 karakter 
+    // seti sanıp metne çevirmeye çalışır. Bu işlem, ASCII aralığındaki olmayan tüm 
+    // byte'ları bozarak hash işleminin yanlış çıkmasına neden olur.
+    // ÇÖZÜM: Gerçek veri byte'larına erişmek için valueBytes kullanılır. ASN.1 BitString 
+    // yapısında ilk byte "unused bits" sayısıdır (genelde 0x00) ve atlanması gerekir.
+    // Kaynak: (RFC 5280, Bölüm 4.1.2.7), (Dart API Dokümantasyonu: String.fromCharCodes)
+    final encoded = pubKeyBits.valueBytes!.sublist(1);
+    
     return asn1lib.ASN1Parser(encoded).nextObject() as asn1lib.ASN1Sequence;
   }
 
@@ -1097,17 +1043,15 @@ class _AtvPairingSession {
     }
   }
 
-  // ASN1Integer'dan leading zero olmadan byte array
   static Uint8List _asn1IntegerToBytes(asn1lib.ASN1Integer node) {
     final encoded = node.encodedBytes;
-    var offset = 1; // tag byte atla
+    var offset = 1; 
     final lenByte = encoded[offset++];
     if (lenByte > 0x80) offset += lenByte - 0x80;
-    if (offset < encoded.length && encoded[offset] == 0x00) offset++; // leading zero atla
+    if (offset < encoded.length && encoded[offset] == 0x00) offset++; 
     return encoded.sublist(offset);
   }
 
-    // DER → PEM sertifika dönüşümü
   static String _derToCertPem(Uint8List der) {
     final b64 = base64.encode(der);
     final sb = StringBuffer('-----BEGIN CERTIFICATE-----\n');
@@ -1118,7 +1062,6 @@ class _AtvPairingSession {
     return sb.toString();
   }
 
-  // BigInt → Uint8List (big-endian, unsigned)
   static Uint8List _bigIntToUint8List(BigInt n) {
     var hex = n.abs().toRadixString(16);
     if (hex.length % 2 != 0) hex = '0$hex';
@@ -1126,7 +1069,6 @@ class _AtvPairingSession {
     for (var i = 0; i < bytes.length; i++) {
       bytes[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
     }
-    // Leading zero kaldır (DER sign byte)
     var start = 0;
     while (start < bytes.length - 1 && bytes[start] == 0) start++;
     return start == 0 ? bytes : bytes.sublist(start);
