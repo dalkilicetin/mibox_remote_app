@@ -82,10 +82,12 @@ class _SetupScreenState extends State<SetupScreen> {
     );
 
     try {
+      print('mDNS Discovery Başlatılıyor...');
       _discoveryV1 = await startDiscovery('_androidtvremote._tcp');
       _discoveryV2 = await startDiscovery('_androidtvremote2._tcp');
 
       void handleService(Service service) async {
+        print('mDNS Servis Bulundu: ${service.name} -> ${service.host}:${service.port}');
         final ip = service.host;
         final port = service.port ?? 6467;
         
@@ -108,14 +110,20 @@ class _SetupScreenState extends State<SetupScreen> {
         }
       }
 
-      _discoveryV1!.addListener(() { for (final s in _discoveryV1!.services) handleService(s); });
-      _discoveryV2!.addListener(() { for (final s in _discoveryV2!.services) handleService(s); });
+      _discoveryV1!.addListener(() { 
+        for (final s in _discoveryV1!.services) handleService(s); 
+      });
+      _discoveryV2!.addListener(() { 
+        for (final s in _discoveryV2!.services) handleService(s); 
+      });
 
-      await Future.delayed(const Duration(seconds: 5));
+      // Süreyi 5 saniyeden 8 saniyeye çıkardık
+      await Future.delayed(const Duration(seconds: 8));
       await _stopMdnsScan();
+      print('mDNS Tarama Tamamlandı.');
 
     } catch (e) {
-      print('mDNS Hatası: $e');
+      print('KRİTİK mDNS Hatası: $e');
     }
 
     if (mounted) {

@@ -49,5 +49,12 @@
 	<string>Compass (yaw) sensoru icin konum izni gereklidir</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>Compass (yaw) sensoru icin konum izni gereklidir</string>
+	<key>NSLocalNetworkUsageDescription</key>
+    <string>Uygulamanın ağdaki Android TV'nizi (Mi Box) bulabilmesi için yerel ağınıza erişmesi gerekmektedir.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_androidtvremote._tcp</string>
+        <string>_androidtvremote2._tcp</string>
+    </array>
 </dict>
 </plist>
