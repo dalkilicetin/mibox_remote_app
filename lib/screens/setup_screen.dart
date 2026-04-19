@@ -7,7 +7,6 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:pointycastle/export.dart' as pc;
 import 'package:basic_utils/basic_utils.dart';
-import 'package:asn1lib/asn1lib.dart' as asn1lib;
 import '../services/mibox_service.dart';
 import 'remote_screen.dart';
 
@@ -943,24 +942,26 @@ class _AtvPairingSession {
   Future<bool> sendPin(String pin) async {
     if (_serverCert == null) return false;
     try {
-      final serverDer = _serverCert!.der;
-      final serverModulus = _extractModulusFromDer(serverDer);
-      final serverExp     = _extractExponentFromDer(serverDer);
+      // 1. TV'nin DER formatındaki sertifikasını standart PEM formatına çevir
+      final serverPem = _derToCertPem(_serverCert!.der);
+      
+      // 2. basic_utils ile X.509 sertifikasını standartlara uygun parse et
+      final serverParsedCert = X509Utils.x509CertificateFromPem(serverPem);
+      final serverPubKey = serverParsedCert.publicKey as pc.RSAPublicKey;
 
-      final clientModulus = _bigIntToUint8List(_keyPair.publicKey.modulus!);
-      final clientExp     = _bigIntToUint8List(_keyPair.publicKey.exponent!);
+      // 3. Modulus ve Exponent'leri saf byte dizilerine çevir
+      final serverModulus = _bigIntToBytes(serverPubKey.modulus!);
+      final serverExp     = _bigIntToBytes(serverPubKey.exponent!);
+
+      final clientModulus = _bigIntToBytes(_keyPair.publicKey.modulus!);
+      final clientExp     = _bigIntToBytes(_keyPair.publicKey.exponent!);
+
       final checkByte   = int.parse(pin.substring(0, 2), radix: 16);
       final pinHashPart = _hexToBytes(pin.substring(2)); 
 
-      _log?.call('sendPin: pin=$pin checkByte=${checkByte.toRadixString(16)} pinHash=[${pinHashPart.join(",")}]');
-      _log?.call('  clientMod:${clientModulus.length}b clientExp:${clientExp.length}b serverMod:${serverModulus.length}b serverExp:${serverExp.length}b');
+      _log?.call('sendPin: checkByte=${checkByte.toRadixString(16)}');
       
-      if (serverModulus.isEmpty) {
-        final preview = _serverCert!.der.sublist(0, _serverCert!.der.length.clamp(0, 30));
-        _log?.call('HATA: serverMod bos! DER preview: [' + preview.join(',') + ']');
-        return false;
-      }
-
+      // 4. Hash İçin Birleştirme
       final hashInput = Uint8List.fromList([
         ...clientModulus, ...clientExp,
         ...serverModulus, ...serverExp,
@@ -968,13 +969,14 @@ class _AtvPairingSession {
       ]);
       final secret = pc.SHA256Digest().process(hashInput);
 
-      _log?.call('  secret[0]=${secret[0]} expected=$checkByte match=${secret[0]==checkByte}');
+      _log?.call('  secret[0]=${secret[0].toRadixString(16)} expected=${checkByte.toRadixString(16)} match=${secret[0]==checkByte}');
 
       if (secret[0] != checkByte) {
-        _log?.call('Secret mismatch: beklenen ${checkByte.toRadixString(16)}, hesaplanan ${secret[0].toRadixString(16)}');
+        _log?.call('Secret mismatch! Hash hesaplaması başarısız.');
         return false;
       }
 
+      // 5. Doğrulanmış Secret'ı TV'ye Gönder
       final secretPayload = Uint8List.fromList([
         8, 2, 16, 200, 1, 
         98,               
@@ -985,7 +987,7 @@ class _AtvPairingSession {
       _sendMessage(secretPayload);
 
       final response = await _readMessage(timeoutMs: 3000);
-      _log?.call('← secret_ack: ${response.length}b = [${response.join(",")}]');
+      _log?.call('← secret_ack alındı: Eşleştirme BAŞARILI!');
       return true;
     } on TimeoutException {
       print('[PAIR] Timeout waiting for response');
@@ -1001,57 +1003,6 @@ class _AtvPairingSession {
     _socket!.add(Uint8List.fromList([payload.length, ...payload]));
   }
 
-  // -----------------------------------------------------------------------------------
-  // KRİTİK DÜZELTME ALANI: ASN.1 BitString ayrıştırması
-  // -----------------------------------------------------------------------------------
-  static asn1lib.ASN1Sequence _parseRsaPublicKey(Uint8List der) {
-    final signedCert = asn1lib.ASN1Parser(der).nextObject() as asn1lib.ASN1Sequence;
-    final cert       = signedCert.elements![0] as asn1lib.ASN1Sequence;
-    final pubKeyEl   = cert.elements![6] as asn1lib.ASN1Sequence;  // SubjectPublicKeyInfo
-    final pubKeyBits = pubKeyEl.elements![1] as asn1lib.ASN1BitString;
-    
-    // HATA BURADAYDI: stringValue özelliği, ikili (binary) byte dizisini UTF-8 karakter 
-    // seti sanıp metne çevirmeye çalışır. Bu işlem, ASCII aralığındaki olmayan tüm 
-    // byte'ları bozarak hash işleminin yanlış çıkmasına neden olur.
-    // ÇÖZÜM: Gerçek veri byte'larına erişmek için valueBytes kullanılır. ASN.1 BitString 
-    // yapısında ilk byte "unused bits" sayısıdır (genelde 0x00) ve atlanması gerekir.
-    // Kaynak: (RFC 5280, Bölüm 4.1.2.7), (Dart API Dokümantasyonu: String.fromCharCodes)
-    final encoded = pubKeyBits.valueBytes().sublist(1);
-    
-    return asn1lib.ASN1Parser(encoded).nextObject() as asn1lib.ASN1Sequence;
-  }
-
-  static Uint8List _extractModulusFromDer(Uint8List der) {
-    try {
-      final keySeq = _parseRsaPublicKey(der);
-      final modulus = keySeq.elements![0] as asn1lib.ASN1Integer;
-      return _bigIntToUint8List(modulus.valueAsBigInteger);
-    } catch (e) {
-      print('[PAIR] extractModulus error: $e');
-      return Uint8List(0);
-    }
-  }
-
-  static Uint8List _extractExponentFromDer(Uint8List der) {
-    try {
-      final keySeq  = _parseRsaPublicKey(der);
-      final exp = keySeq.elements![1] as asn1lib.ASN1Integer;
-      return _bigIntToUint8List(exp.valueAsBigInteger);
-    } catch (e) {
-      print('[PAIR] extractExponent error: $e');
-      return Uint8List(0);
-    }
-  }
-
-  static Uint8List _asn1IntegerToBytes(asn1lib.ASN1Integer node) {
-    final encoded = node.encodedBytes;
-    var offset = 1; 
-    final lenByte = encoded[offset++];
-    if (lenByte > 0x80) offset += lenByte - 0x80;
-    if (offset < encoded.length && encoded[offset] == 0x00) offset++; 
-    return encoded.sublist(offset);
-  }
-
   static String _derToCertPem(Uint8List der) {
     final b64 = base64.encode(der);
     final sb = StringBuffer('-----BEGIN CERTIFICATE-----\n');
@@ -1062,16 +1013,14 @@ class _AtvPairingSession {
     return sb.toString();
   }
 
-  static Uint8List _bigIntToUint8List(BigInt n) {
-    var hex = n.abs().toRadixString(16);
+  static Uint8List _bigIntToBytes(BigInt n) {
+    var hex = n.toRadixString(16);
     if (hex.length % 2 != 0) hex = '0$hex';
     final bytes = Uint8List(hex.length ~/ 2);
     for (var i = 0; i < bytes.length; i++) {
       bytes[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
     }
-    var start = 0;
-    while (start < bytes.length - 1 && bytes[start] == 0) start++;
-    return start == 0 ? bytes : bytes.sublist(start);
+    return bytes;
   }
 
   void close() => _socket?.destroy();
