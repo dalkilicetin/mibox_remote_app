@@ -61,6 +61,22 @@ class _SetupScreenState extends State<SetupScreen> {
     if (_discoveryV2 != null) { await stopDiscovery(_discoveryV2!); _discoveryV2 = null; }
   }
 
+  // ── Alt Ağları (Subnets) Bulma ──────────────────────────────────────────────
+  Future<List<String>> _getSubnets() async {
+    final subnets = <String>[];
+    try {
+      final ifaces = await NetworkInterface.list(type: InternetAddressType.IPv4, includeLinkLocal: false);
+      for (final iface in ifaces) {
+        for (final addr in iface.addresses) {
+          final parts = addr.address.split('.');
+          if (parts.length == 4) subnets.add('${parts[0]}.${parts[1]}.${parts[2]}');
+        }
+      }
+    } catch (_) {}
+    return subnets.toSet().toList();
+  }
+
+  // ── HİBRİT TARAMA (mDNS + TCP Port Sweep) ──────────────────────────────────
   Future<void> _startScan() async {
     if (_scanning) return;
     await _stopMdnsScan();
@@ -68,68 +84,105 @@ class _SetupScreenState extends State<SetupScreen> {
     setState(() {
       _scanning = true;
       _devices = [];
-      _scanStatus = 'Ağdaki cihazlar aranıyor (mDNS)...';
+      _scanStatus = 'Adım 1: Ağda yayın aranıyor (mDNS)...';
     });
 
     final found = <DiscoveredDevice>[];
     final udpFoundIps = <String>{};
 
+    // 0. APK UDP Taraması (Hızlı)
     await MiBoxService.discoverDevices(
       timeout: const Duration(seconds: 2),
-      onDeviceFound: (device) {
-        udpFoundIps.add(device['ip'] as String);
-      },
+      onDeviceFound: (device) => udpFoundIps.add(device['ip'] as String),
     );
 
+    // =========================================================
+    // ADIM 1: mDNS TARAMASI (Kibar ve Hızlı)
+    // =========================================================
     try {
-      print('mDNS Discovery Başlatılıyor...');
       _discoveryV1 = await startDiscovery('_androidtvremote._tcp');
       _discoveryV2 = await startDiscovery('_androidtvremote2._tcp');
 
-      void handleService(Service service) async {
-        print('mDNS Servis Bulundu: ${service.name} -> ${service.host}:${service.port}');
+      void handleMdnsService(Service service) async {
         final ip = service.host;
         final port = service.port ?? 6467;
         
         if (ip != null && !found.any((d) => d.ip == ip)) {
           final cert = await _secureStorage.read(key: 'atv_cert_$ip');
-          final hasCert = cert != null && cert.isNotEmpty;
-          final hasApk = udpFoundIps.contains(ip);
-
-          final d = DiscoveredDevice(
-            ip: ip, hasCert: hasCert, hasApk: hasApk,
-            pairingPort: port, remotePort: 6466,
-          );
-
           if (mounted) {
             setState(() {
-              found.add(d);
+              found.add(DiscoveredDevice(
+                ip: ip, hasCert: cert != null && cert.isNotEmpty, 
+                hasApk: udpFoundIps.contains(ip), pairingPort: port, remotePort: 6466,
+              ));
               _devices = List.from(found);
             });
           }
         }
       }
 
-      _discoveryV1!.addListener(() { 
-        for (final s in _discoveryV1!.services) handleService(s); 
-      });
-      _discoveryV2!.addListener(() { 
-        for (final s in _discoveryV2!.services) handleService(s); 
-      });
+      _discoveryV1!.addListener(() { for (final s in _discoveryV1!.services) handleMdnsService(s); });
+      _discoveryV2!.addListener(() { for (final s in _discoveryV2!.services) handleMdnsService(s); });
 
-      // Süreyi 5 saniyeden 8 saniyeye çıkardık
-      await Future.delayed(const Duration(seconds: 8));
+      // mDNS için 3 saniye bekle
+      await Future.delayed(const Duration(seconds: 3));
       await _stopMdnsScan();
-      print('mDNS Tarama Tamamlandı.');
-
     } catch (e) {
-      print('KRİTİK mDNS Hatası: $e');
+      print('mDNS Hatası: $e');
     }
 
+    // =========================================================
+    // ADIM 2: TCP PORT SWEEP (mDNS engelliyse kesin bulur)
+    // =========================================================
+    if (found.isEmpty) {
+      if (mounted) setState(() => _scanStatus = 'Adım 2: Derin tarama yapılıyor (TCP Sweep)...');
+      
+      final subnets = await _getSubnets();
+      const batchSize = 40; 
+
+      for (final subnet in subnets) {
+        for (var start = 1; start <= 254; start += batchSize) {
+          if (!mounted) return;
+          final end = min(start + batchSize - 1, 254);
+          final futures = <Future<void>>[];
+
+          for (var i = start; i <= end; i++) {
+            final ip = '$subnet.$i';
+            futures.add(() async {
+              try {
+                // TV'nin Eşleştirme portuna (6467) 500ms ile dokun
+                final socket = await Socket.connect(ip, 6467, timeout: const Duration(milliseconds: 500));
+                socket.destroy();
+                
+                if (!found.any((d) => d.ip == ip)) {
+                  final cert = await _secureStorage.read(key: 'atv_cert_$ip');
+                  if (mounted) {
+                    setState(() {
+                      found.add(DiscoveredDevice(
+                        ip: ip, hasCert: cert != null && cert.isNotEmpty, 
+                        hasApk: udpFoundIps.contains(ip), pairingPort: 6467, remotePort: 6466,
+                      ));
+                      _devices = List.from(found);
+                    });
+                  }
+                }
+              } catch (_) {}
+            }());
+          }
+          await Future.wait(futures);
+        }
+      }
+    }
+
+    // =========================================================
+    // SONUÇ
+    // =========================================================
     if (mounted) {
       setState(() {
         _scanning = false;
-        _scanStatus = found.isEmpty ? 'Cihaz bulunamadı. TV açık mı?' : '${found.length} cihaz bulundu';
+        _scanStatus = found.isEmpty 
+            ? 'Cihaz bulunamadı. TV ile aynı Wi-Fi ağında mısınız?' 
+            : '${found.length} cihaz bulundu';
       });
     }
   }
