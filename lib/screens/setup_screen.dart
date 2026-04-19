@@ -1016,7 +1016,7 @@ class _AtvPairingSession {
     // ÇÖZÜM: Gerçek veri byte'larına erişmek için valueBytes kullanılır. ASN.1 BitString 
     // yapısında ilk byte "unused bits" sayısıdır (genelde 0x00) ve atlanması gerekir.
     // Kaynak: (RFC 5280, Bölüm 4.1.2.7), (Dart API Dokümantasyonu: String.fromCharCodes)
-    final encoded = pubKeyBits.valueBytes!.sublist(1);
+    final encoded = pubKeyBits.valueBytes().sublist(1);
     
     return asn1lib.ASN1Parser(encoded).nextObject() as asn1lib.ASN1Sequence;
   }
