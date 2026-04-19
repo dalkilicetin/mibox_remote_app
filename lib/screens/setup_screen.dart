@@ -1,20 +1,25 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:pointycastle/export.dart' as pc;
 import 'package:basic_utils/basic_utils.dart';
+import 'package:nsd/nsd.dart';
+import 'dart:typed_data';
+
 import '../services/mibox_service.dart';
 import 'remote_screen.dart';
+
+// ── Güvenli Depolama Örneği ───────────────────────────────────────────────────
+const _secureStorage = FlutterSecureStorage();
 
 // ── Bulunan cihaz modeli ──────────────────────────────────────────────────────
 class DiscoveredDevice {
   final String ip;
   final bool hasCert;
-  final bool hasApk;       // AirCursor APK çalışıyor mu
+  final bool hasApk;       
   final int pairingPort;
   final int remotePort;
 
@@ -38,8 +43,7 @@ class _SetupScreenState extends State<SetupScreen> {
   List<DiscoveredDevice> _devices = [];
   bool _scanning = false;
   String _scanStatus = '';
-  int _scanned = 0;
-  int _total = 0;
+  Discovery? _discovery;
 
   @override
   void initState() {
@@ -47,138 +51,79 @@ class _SetupScreenState extends State<SetupScreen> {
     _startScan();
   }
 
-  // ── Subnet discovery ────────────────────────────────────────────────────────
-  Future<List<String>> _getSubnets() async {
-    final subnets = <String>[];
-    try {
-      final ifaces = await NetworkInterface.list(
-        type: InternetAddressType.IPv4,
-        includeLinkLocal: false,
-      );
-      for (final iface in ifaces) {
-        for (final addr in iface.addresses) {
-          final parts = addr.address.split('.');
-          if (parts.length != 4) continue;
-          final a = int.tryParse(parts[0]) ?? 0;
-          final b = int.tryParse(parts[1]) ?? 0;
-          String? subnet;
-          if (a == 10) subnet = '${parts[0]}.${parts[1]}.${parts[2]}';
-          else if (a == 172 && b >= 16 && b <= 31) subnet = '${parts[0]}.${parts[1]}.${parts[2]}';
-          else if (a == 192 && b == 168) subnet = '${parts[0]}.${parts[1]}.${parts[2]}';
-          if (subnet != null && !subnets.contains(subnet)) subnets.add(subnet);
-        }
-      }
-    } catch (_) {}
-    return subnets;
+  @override
+  void dispose() {
+    _stopMdnsScan();
+    super.dispose();
   }
 
-  // ── ATV port tarama (paralel) ───────────────────────────────────────────────
-  static const _pairingPorts = [6467, 6468, 7676];
-  static const _remotePorts  = [6466, 6468, 7675];
-
-  Future<int?> _tryPorts(String ip, List<int> ports) async {
-    final completer = Completer<int?>();
-    var pending = ports.length;
-    for (final port in ports) {
-      Socket.connect(ip, port, timeout: const Duration(milliseconds: 600))
-          .then((sock) {
-        sock.destroy();
-        if (!completer.isCompleted) completer.complete(port);
-      }).catchError((_) {
-        pending--;
-        if (pending == 0 && !completer.isCompleted) completer.complete(null);
-      });
+  Future<void> _stopMdnsScan() async {
+    if (_discovery != null) {
+      await stopDiscovery(_discovery!);
+      _discovery = null;
     }
-    return completer.future;
   }
 
-  // ── Ana tarama ──────────────────────────────────────────────────────────────
+  // ── Ana tarama (mDNS + UDP) ─────────────────────────────────────────────────
   Future<void> _startScan() async {
+    if (_scanning) return;
+    await _stopMdnsScan();
+
     setState(() {
       _scanning = true;
       _devices = [];
-      _scanStatus = 'AirCursor APK aranıyor (UDP)...';
-      _scanned = 0;
-      _total = 0;
+      _scanStatus = 'Ağdaki cihazlar aranıyor (mDNS)...';
     });
 
-    final prefs = await SharedPreferences.getInstance();
     final found = <DiscoveredDevice>[];
-
-    // 1. UDP broadcast — APK'ı hızlı bul, ama ATV portlarını yine de tara
     final udpFoundIps = <String>{};
+
+    // 1. UDP broadcast — APK tespiti
     await MiBoxService.discoverDevices(
-      timeout: const Duration(seconds: 3),
+      timeout: const Duration(seconds: 2),
       onDeviceFound: (device) {
         udpFoundIps.add(device['ip'] as String);
       },
     );
 
-    // 2. IP taraması — UDP bulunan IP'ler önce, sonra tüm subnet
-    setState(() => _scanStatus = 'ATV portları taranıyor...');
-    final subnets = await _getSubnets();
-    if (subnets.isEmpty) {
-      setState(() { _scanning = false; _scanStatus = 'Wi-Fi ağı bulunamadı.'; });
-      return;
-    }
+    // 2. mDNS (NSD) ile Android TV Keşfi (Ağı yormadan, tek paketle)
+    try {
+      _discovery = await startDiscovery('_androidtvremote2._tcp');
+      _discovery!.addListener(() async {
+        for (final service in _discovery!.services) {
+          final ip = service.host;
+          final port = service.port ?? 6467;
+          
+          if (ip != null && !found.any((d) => d.ip == ip)) {
+            // Güvenli depolamadan sertifika kontrolü yap
+            final cert = await _secureStorage.read(key: 'atv_cert_$ip');
+            final hasCert = cert != null && cert.isNotEmpty;
+            final hasApk = udpFoundIps.contains(ip);
 
-    setState(() { _total = 254 * subnets.length; });
-    const batchSize = 30;
-    var totalScanned = 0;
+            final d = DiscoveredDevice(
+              ip: ip,
+              hasCert: hasCert,
+              hasApk: hasApk,
+              pairingPort: port,
+              remotePort: 6466, // Remote port standart
+            );
 
-    for (final subnet in subnets) {
-      if (!mounted) return;
-      setState(() => _scanStatus = 'Taranıyor: $subnet.0/24');
-
-      for (var start = 1; start <= 254; start += batchSize) {
-        if (!mounted) return;
-        final end = min(start + batchSize - 1, 254);
-        final futures = <Future<void>>[];
-
-        for (var i = start; i <= end; i++) {
-          final ip = '$subnet.$i';
-          futures.add(() async {
-            final udpFound = udpFoundIps.contains(ip);
-
-            final results = await Future.wait([
-              _tryPorts(ip, _pairingPorts),
-              _tryPorts(ip, _remotePorts),
-              udpFound
-                  ? Future.value(true)
-                  : Socket.connect(ip, 9876,
-                          timeout: const Duration(milliseconds: 600))
-                      .then((s) { s.destroy(); return true; })
-                      .catchError((_) => false),
-            ]);
-
-            final pairingPort = results[0] as int?;
-            final remotePort  = results[1] as int?;
-            final hasApk      = results[2] as bool;
-
-            if (pairingPort == null && remotePort == null && !hasApk) return;
-
-            final hasCert = (prefs.getString('atv_cert_$ip') ?? '').isNotEmpty;
-            if (pairingPort != null) await prefs.setInt('atv_pairing_port_$ip', pairingPort);
-            if (remotePort  != null) await prefs.setInt('atv_remote_port_$ip',  remotePort);
-
-            if (!found.any((d) => d.ip == ip) && mounted) {
-              final d = DiscoveredDevice(
-                ip: ip,
-                hasCert: hasCert,
-                hasApk: hasApk,
-                pairingPort: pairingPort ?? 6467,
-                remotePort:  remotePort  ?? 6466,
-              );
-              found.add(d);
-              setState(() => _devices = List.from(found));
+            if (mounted) {
+              setState(() {
+                found.add(d);
+                _devices = List.from(found);
+              });
             }
-          }());
+          }
         }
+      });
 
-        await Future.wait(futures);
-        totalScanned += (end - start + 1);
-        if (mounted) setState(() => _scanned = totalScanned);
-      }
+      // 5 Saniye dinle ve kapat
+      await Future.delayed(const Duration(seconds: 5));
+      await _stopMdnsScan();
+
+    } catch (e) {
+      print('mDNS Hatası: $e');
     }
 
     if (mounted) {
@@ -193,11 +138,10 @@ class _SetupScreenState extends State<SetupScreen> {
 
   // ── Bağlan ─────────────────────────────────────────────────────────────────
   Future<void> _connectTo(DiscoveredDevice device) async {
-    final prefs = await SharedPreferences.getInstance();
-    final cert = prefs.getString('atv_cert_${device.ip}') ?? '';
-    final key  = prefs.getString('atv_key_${device.ip}') ?? '';
+    final cert = await _secureStorage.read(key: 'atv_cert_${device.ip}');
+    final key  = await _secureStorage.read(key: 'atv_key_${device.ip}');
 
-    if (cert.isEmpty || key.isEmpty) {
+    if (cert == null || key == null || cert.isEmpty || key.isEmpty) {
       if (!mounted) return;
       final result = await Navigator.push<bool>(
         context,
@@ -279,7 +223,7 @@ class _SetupScreenState extends State<SetupScreen> {
     );
 
     if (ip == null || ip.isEmpty) return;
-    final cert = prefs.getString('atv_cert_$ip') ?? '';
+    final cert = await _secureStorage.read(key: 'atv_cert_$ip');
     final pairingPort = prefs.getInt('atv_pairing_port_$ip') ?? 6467;
     final remotePort  = prefs.getInt('atv_remote_port_$ip')  ?? 6466;
     bool hasApk = false;
@@ -287,8 +231,9 @@ class _SetupScreenState extends State<SetupScreen> {
       final s = await Socket.connect(ip, 9876, timeout: const Duration(seconds: 2));
       s.destroy(); hasApk = true;
     } catch (_) {}
+    
     final device = DiscoveredDevice(
-      ip: ip, hasCert: cert.isNotEmpty, hasApk: hasApk,
+      ip: ip, hasCert: cert != null && cert.isNotEmpty, hasApk: hasApk,
       pairingPort: pairingPort, remotePort: remotePort,
     );
     await _connectTo(device);
@@ -320,19 +265,10 @@ class _SetupScreenState extends State<SetupScreen> {
             if (_scanning)
               Padding(
                 padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
-                child: Column(
-                  children: [
-                    LinearProgressIndicator(
-                      value: _total > 0 ? _scanned / _total : null,
-                      backgroundColor: const Color(0xFF0f3460),
-                      color: const Color(0xFFe94560),
-                      minHeight: 4,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(_total > 0 ? '$_scanned / $_total' : '',
-                        style: const TextStyle(color: Colors.grey, fontSize: 11)),
-                  ],
+                child: const LinearProgressIndicator(
+                  backgroundColor: Color(0xFF0f3460),
+                  color: Color(0xFFe94560),
+                  minHeight: 4,
                 ),
               ),
 
@@ -361,10 +297,10 @@ class _SetupScreenState extends State<SetupScreen> {
                           device: d,
                           onTap: () => _connectTo(d),
                           onRepair: () async {
-                            final prefs = await SharedPreferences.getInstance();
-                            await prefs.remove('atv_cert_${d.ip}');
-                            await prefs.remove('atv_key_${d.ip}');
-                            await prefs.remove('atv_key_pkcs8_${d.ip}');
+                            // Sertifikaları güvenli depolamadan sil
+                            await _secureStorage.delete(key: 'atv_cert_${d.ip}');
+                            await _secureStorage.delete(key: 'atv_key_${d.ip}');
+                            
                             if (!mounted) return;
                             final result = await Navigator.push<bool>(
                               context,
@@ -534,32 +470,14 @@ class _PairingScreenState extends State<PairingScreen> {
   bool _pairing = false;
   _AtvPairingSession? _session;
   final List<String> _logs = [];
-  IOSink? _logSink;
-
-  Future<void> _initLogFile() async {
-    for (final path in [
-      '/data/local/tmp/atv_pairing.log',
-      '/data/local/tmp/atv_pairing_${DateTime.now().millisecondsSinceEpoch}.log',
-    ]) {
-      try {
-        final f = File(path);
-        _logSink = f.openWrite(mode: FileMode.writeOnly);
-        _logSink!.writeln('=== ATV Pairing Log \${DateTime.now()} ===');
-        print('[PAIR] Log: $path');
-        break;
-      } catch (_) {}
-    }
-  }
 
   void _log(String msg) {
-    final line = '[${DateTime.now().toIso8601String()}] $msg';
     print('[PAIR] $msg');
-    _logSink?.writeln(line);
     if (mounted) setState(() => _logs.add('[${DateTime.now().second}s] $msg'));
   }
 
   @override
-  void initState() { super.initState(); _initLogFile().then((_) => _startPairing()); }
+  void initState() { super.initState(); _startPairing(); }
 
   static const _candidatePorts = [6467, 6468, 7676];
 
@@ -573,9 +491,7 @@ class _PairingScreenState extends State<PairingScreen> {
         widget.pairingPort,
         ..._candidatePorts.where((p) => p != widget.pairingPort),
       ];
-      _log('Denenecek portlar: $portsToTry');
 
-      _log('Sertifika üretiliyor (tek seferlik)...');
       final sharedSession = await _AtvPairingSession.create(widget.ip);
 
       int? workingPort;
@@ -617,14 +533,15 @@ class _PairingScreenState extends State<PairingScreen> {
         print('[PAIR] $msg');
         if (mounted) setState(() => _logs.add('[PIN] $msg'));
       };
+      
       final ok = await _session!.sendPin(pin);
+      
       if (ok) {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('atv_cert_${widget.ip}', _session!.certPem);
-        await prefs.setString('atv_key_${widget.ip}',  _session!.keyPem);
-        _log('cert kaydedildi: ${_session!.certPem.split("\n").length} satır');
-        _log('PAIRING cert[0]: ${_session!.certPem.split("\n").first}');
-        _log('PAIRING key[0]:  ${_session!.keyPem.split("\n").first}');
+        // BAŞARILI: Sertifikaları Güvenli Depolamaya Yaz
+        await _secureStorage.write(key: 'atv_cert_${widget.ip}', value: _session!.certPem);
+        await _secureStorage.write(key: 'atv_key_${widget.ip}',  value: _session!.keyPem);
+        
+        _log('Sertifikalar Güvenli Depolamaya (Keystore) kaydedildi.');
         _log('TV kayıt bekleniyor (3s)...');
         await Future.delayed(const Duration(seconds: 3));
         if (mounted) Navigator.pop(context, true);
@@ -638,7 +555,7 @@ class _PairingScreenState extends State<PairingScreen> {
   }
 
   @override
-  void dispose() { _logSink?.flush(); _logSink?.close(); _session?.close(); _pinController.dispose(); super.dispose(); }
+  void dispose() { _session?.close(); _pinController.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
@@ -788,14 +705,11 @@ class _AtvPairingSession {
       rsaPublic,
     );
     final notBefore = DateTime.now().subtract(const Duration(days: 1));
-    print('[PAIR] cert notBefore: $notBefore');
     final certPem = X509Utils.generateSelfSignedCertificate(
       rsaPrivate, csrPem, 3650,
       notBefore: notBefore,
     );
     final keyPem = CryptoUtils.encodeRSAPrivateKeyToPem(rsaPrivate);
-
-    print('[PAIR] certPem: ${certPem.length}chars keyPem: ${keyPem.length}chars');
 
     return _AtvPairingSession._(ip, pairingPort, certPem, keyPem,
         pc.AsymmetricKeyPair<pc.RSAPublicKey, pc.RSAPrivateKey>(rsaPublic, rsaPrivate));
@@ -804,7 +718,6 @@ class _AtvPairingSession {
   Future<String?> connectWithLog(void Function(String) log) async {
     _log = log;
     try {
-      log('TLS bağlantısı kuruluyor → $ip:$pairingPort');
       final context = SecurityContext(withTrustedRoots: false);
       context.useCertificateChainBytes(utf8.encode(certPem)); 
       context.usePrivateKeyBytes(utf8.encode(keyPem));          
@@ -812,36 +725,29 @@ class _AtvPairingSession {
           context: context,
           onBadCertificate: (cert) { _serverCert = cert; return true; },
           timeout: const Duration(seconds: 5));
-      log('TLS OK — sunucu sertifikası alındı: ${_serverCert != null}');
       _setupDataListener();
 
       final reqBytes = _buildPairingRequestBytes();
-      log('→ pairing_request gönderiliyor: ${reqBytes.length} byte = [${reqBytes.join(",")}]');
       _sendMessage(reqBytes);
 
       try {
-        final ack = await _readMessage(timeoutMs: 3000);
-        log('← pairing_request_ack: ${ack.length} byte');
+        await _readMessage(timeoutMs: 3000);
       } catch (e) {
         return 'pairing_request_ack alınamadı: $e';
       }
 
       _sendOptions();
-      log('→ options gönderildi');
 
       try {
-        final opts = await _readMessage(timeoutMs: 5000);
-        log('← options alındı: ${opts.length} byte — TV PIN gösteriyor olmalı');
+        await _readMessage(timeoutMs: 5000);
       } catch (e) {
         return 'options alınamadı: $e';
       }
 
       _sendConfiguration();
-      log('→ configuration gönderildi');
 
       try {
-        final cfgAck = await _readMessage(timeoutMs: 3000);
-        log('← configuration_ack: ${cfgAck.length} byte');
+        await _readMessage(timeoutMs: 3000);
       } catch (e) {
         return 'configuration_ack alınamadı: $e';
       }
@@ -851,11 +757,6 @@ class _AtvPairingSession {
     } catch (e) {
       return 'Bağlantı hatası: $e';
     }
-  }
-
-  Future<bool> connect() async {
-    final err = await connectWithLog((msg) => print('[PAIR] $msg'));
-    return err == null;
   }
 
   final _receivedMessages = <List<int>>[];
@@ -870,7 +771,6 @@ class _AtvPairingSession {
   void _setupDataListener() {
     _socket!.listen(
       (data) {
-        _log?.call('← TV raw (${data.length}b): [${data.map((b) => b.toString()).join(',')}]');
         _recvBuffer.addAll(data);
         _flushTimer?.cancel();
         _flushTimer = Timer(const Duration(milliseconds: 10), _processBuffer);
@@ -886,7 +786,6 @@ class _AtvPairingSession {
       if (_recvBuffer.length < 1 + expectedLen) break; 
       final msg = _recvBuffer.sublist(1, 1 + expectedLen);
       _recvBuffer.removeRange(0, 1 + expectedLen);
-      _log?.call('  mesaj: $expectedLen byte = [${msg.join(",")}]');
       if (_messageCompleter.isNotEmpty) {
         _messageCompleter.removeAt(0).complete(msg);
       } else {
@@ -942,14 +841,11 @@ class _AtvPairingSession {
   Future<bool> sendPin(String pin) async {
     if (_serverCert == null) return false;
     try {
-      // 1. TV'nin DER formatındaki sertifikasını standart PEM formatına çevir
       final serverPem = _derToCertPem(_serverCert!.der);
       
-      // 2. basic_utils ile X.509 sertifikasını standartlara uygun parse et
       final serverParsedCert = X509Utils.x509CertificateFromPem(serverPem);
       final serverPubKey = serverParsedCert.publicKey as pc.RSAPublicKey;
 
-      // 3. Modulus ve Exponent'leri saf byte dizilerine çevir
       final serverModulus = _bigIntToBytes(serverPubKey.modulus!);
       final serverExp     = _bigIntToBytes(serverPubKey.exponent!);
 
@@ -961,7 +857,6 @@ class _AtvPairingSession {
 
       _log?.call('sendPin: checkByte=${checkByte.toRadixString(16)}');
       
-      // 4. Hash İçin Birleştirme
       final hashInput = Uint8List.fromList([
         ...clientModulus, ...clientExp,
         ...serverModulus, ...serverExp,
@@ -969,14 +864,11 @@ class _AtvPairingSession {
       ]);
       final secret = pc.SHA256Digest().process(hashInput);
 
-      _log?.call('  secret[0]=${secret[0].toRadixString(16)} expected=${checkByte.toRadixString(16)} match=${secret[0]==checkByte}');
-
       if (secret[0] != checkByte) {
         _log?.call('Secret mismatch! Hash hesaplaması başarısız.');
         return false;
       }
 
-      // 5. Doğrulanmış Secret'ı TV'ye Gönder
       final secretPayload = Uint8List.fromList([
         8, 2, 16, 200, 1, 
         98,               
@@ -986,7 +878,7 @@ class _AtvPairingSession {
       ]);
       _sendMessage(secretPayload);
 
-      final response = await _readMessage(timeoutMs: 3000);
+      await _readMessage(timeoutMs: 3000);
       _log?.call('← secret_ack alındı: Eşleştirme BAŞARILI!');
       return true;
     } on TimeoutException {
@@ -1033,24 +925,4 @@ class _AtvPairingSession {
     }
     return bytes;
   }
-}
-
-class _ProtoWriter {
-  final List<int> _buf = [];
-  void writeString(int f, String v) {
-    final b = utf8.encode(v);
-    _writeRawVarint((f << 3) | 2); _writeRawVarint(b.length); _buf.addAll(b);
-  }
-  void writeBytes(int f, Uint8List v) {
-    _writeRawVarint((f << 3) | 2); _writeRawVarint(v.length); _buf.addAll(v);
-  }
-  void _writeRawVarint(int v) {
-    while (v > 0x7F) { _buf.add((v & 0x7F) | 0x80); v >>= 7; }
-    _buf.add(v & 0x7F);
-  }
-  void writeVarint(int f, int v) {
-    _writeRawVarint((f << 3) | 0);
-    _writeRawVarint(v);
-  }
-  Uint8List toBytes() => Uint8List.fromList(_buf);
 }
