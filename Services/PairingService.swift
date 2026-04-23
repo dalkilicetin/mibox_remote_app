@@ -92,10 +92,10 @@ final class PairingService {
         send(buildPairingRequest())
         _ = try await readMsg(timeout: 3); log("← ack")
 
-        send(buildOptionsMessage())   // options
+        send(Data([8,2,16,200,1,162,1,8,10,4,8,3,16,6,24,1]))   // options
         _ = try await readMsg(timeout: 5); log("← options_ack")
 
-        send(buildConfigurationMessage())   // configuration
+        send(Data([8,2,16,200,1,242,1,8,10,4,8,3,16,6,16,1]))   // configuration
         _ = try await readMsg(timeout: 3); log("← config_ack")
 
         log("Handshake tamamlandı — PIN bekleniyor")
@@ -207,35 +207,6 @@ final class PairingService {
                 }
             }
         }
-    }
-
-    // MARK: - Handshake Protobuf messages
-
-    private func buildOptionsMessage() -> Data {
-        let options = ProtoWriter()
-        options.writeVarint(field: 1, value: 3) // preferred_handshake_version (PROTOCOL_VERSION_V2)
-        options.writeVarint(field: 2, value: 1) // preferred_handshake_message_format (MESSAGE_FORMAT_PROTO)
-        // You might need to add more fields here depending on specific requirements
-        // e.g., options.writeVarint(field: 3, value: Capabilities.all.rawValue)
-
-        let wrapper = ProtoWriter()
-        wrapper.writeVarint(field: 1, value: 200) // PairingRequest.PairingMessage.OptionsTag
-        wrapper.writeBytes(field: 2, value: options.toData())
-        return wrapper.toData()
-    }
-
-    private func buildConfigurationMessage() -> Data {
-        let configuration = ProtoWriter()
-        configuration.writeVarint(field: 1, value: 1) // ClientType (UNKNOWN = 0, TV = 1, REMOTE = 2)
-        configuration.writeString(field: 2, value: "MiBoxRemote") // name
-        configuration.writeString(field: 3, value: "com.google.android.tv.remote") // package_name
-        configuration.writeString(field: 4, value: "1.0") // app_version
-        configuration.writeVarint(field: 5, value: 1) // sdk_version
-
-        let wrapper = ProtoWriter()
-        wrapper.writeVarint(field: 1, value: 200) // PairingRequest.PairingMessage.ConfigurationTag
-        wrapper.writeBytes(field: 2, value: configuration.toData())
-        return wrapper.toData()
     }
 
     private func buildPairingRequest() -> Data {
