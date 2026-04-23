@@ -47,13 +47,12 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
     sources:
-      - path: App
-      - path: Models
-      - path: Services
-      - path: Utilities
-      - path: Views
-    resources:
-      - path: Assets.xcassets
+      - App
+      - Models
+      - Services
+      - Utilities
+      - Views
+      - Assets.xcassets
     settings:
       base:
         PRODUCT_NAME: MiBoxRemote
