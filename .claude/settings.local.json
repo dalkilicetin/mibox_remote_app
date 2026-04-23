@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mv lib *)",
+      "Bash(mv android *)",
+      "Bash(mv ios *)",
+      "Bash(mv linux *)",
+      "Bash(mv macos *)"
+    ]
+  }
+}
