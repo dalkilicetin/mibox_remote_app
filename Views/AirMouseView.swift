@@ -32,6 +32,9 @@ struct AirMouseView: View {
     @State private var swipeAccum = 0.0
 
     private let motion = CMMotionManager()
+    // NOT: CMMotionManager `let` olarak tanımlı ama class olduğu için referans tutulur.
+    // SwiftUI struct yeniden oluşturulsa da aynı instance kullanılmaya devam eder
+    // çünkü SwiftUI property storage'ı korur.
     private static let LP = 0.5
     private static let TAP_MAX_MOVE: Double = 12
     private static let TAP_MAX_MS   = 250
@@ -66,7 +69,9 @@ struct AirMouseView: View {
     // MARK: - Sub-views
 
     private func debugBar(geo: GeometryProxy) -> some View {
-        Text(debugText)
+        let sensorStatus = motion.isAccelerometerActive ? "ACC✓" : "ACC✗"
+        let magStatus = motion.isMagnetometerActive ? "MAG✓" : "MAG✗"
+        return Text("\(sensorStatus) \(magStatus) | \(debugText)")
             .font(.system(size: geo.size.width * 0.028, design: .monospaced))
             .foregroundColor(.greenOk)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -228,6 +233,12 @@ struct AirMouseView: View {
     // MARK: - Sensors
 
     private func startSensors() {
+        // Önceki oturumdan kalan updates'i temizle
+        motion.stopAccelerometerUpdates()
+        motion.stopMagnetometerUpdates()
+        // Filter state'i sıfırla — eski değerlerle cursor zıplamasın
+        filterInit = false; lastAlphaInit = false; filteredDa = 0
+
         if motion.isAccelerometerAvailable {
             motion.accelerometerUpdateInterval = 1.0/60
             motion.startAccelerometerUpdates(to: .main) { data, _ in
