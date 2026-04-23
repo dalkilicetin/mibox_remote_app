@@ -9,15 +9,15 @@ enum KeychainHelper {
     static func storeIdentity(cert: SecCertificate, privateKey: SecKey, label: String) -> Bool {
         deleteIdentity(label: label)
 
+        // kSecAttrAccessible is NOT used for certificates — iOS ignores or rejects it
         let certQ: [String: Any] = [
             kSecClass as String: kSecClassCertificate,
             kSecValueRef as String: cert,
             kSecAttrLabel as String: label,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
         ]
         let cs = SecItemAdd(certQ as CFDictionary, nil)
         guard cs == errSecSuccess || cs == errSecDuplicateItem else {
-            print("[Keychain] cert add: \(cs)")
+            print("[Keychain] cert add failed: \(cs)")
             return false
         }
 
@@ -26,17 +26,18 @@ enum KeychainHelper {
             kSecValueRef as String: privateKey,
             kSecAttrLabel as String: label,
             kSecAttrIsPermanent as String: true,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
         ]
         let ks = SecItemAdd(keyQ as CFDictionary, nil)
         guard ks == errSecSuccess || ks == errSecDuplicateItem else {
-            print("[Keychain] key add: \(ks)")
+            print("[Keychain] key add failed: \(ks)")
             return false
         }
         return true
     }
 
     static func loadIdentity(label: String) -> SecIdentity? {
+        // Primary: query identity directly by certificate label
         let q: [String: Any] = [
             kSecClass as String: kSecClassIdentity,
             kSecAttrLabel as String: label,
@@ -44,8 +45,35 @@ enum KeychainHelper {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var result: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &result) == errSecSuccess else { return nil }
-        return (result as! SecIdentity)
+        if SecItemCopyMatching(q as CFDictionary, &result) == errSecSuccess, result != nil {
+            return (result as! SecIdentity)
+        }
+
+        // Fallback: get cert by label → search identity matching that cert
+        let certQ: [String: Any] = [
+            kSecClass as String: kSecClassCertificate,
+            kSecAttrLabel as String: label,
+            kSecReturnRef as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var certRef: CFTypeRef?
+        guard SecItemCopyMatching(certQ as CFDictionary, &certRef) == errSecSuccess,
+              let cert = certRef else {
+            print("[Keychain] cert not found for label: \(label)")
+            return nil
+        }
+        let idQ: [String: Any] = [
+            kSecClass as String: kSecClassIdentity,
+            kSecMatchItemList as String: [cert as! SecCertificate],
+            kSecReturnRef as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var idRef: CFTypeRef?
+        guard SecItemCopyMatching(idQ as CFDictionary, &idRef) == errSecSuccess else {
+            print("[Keychain] identity not found via cert match")
+            return nil
+        }
+        return (idRef as! SecIdentity)
     }
 
     static func hasCert(ip: String) -> Bool {

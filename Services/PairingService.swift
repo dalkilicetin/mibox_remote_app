@@ -141,11 +141,19 @@ final class PairingService {
     // MARK: - Persist identity permanently
 
     func saveIdentity(ip: String) {
-        guard let cert = certificate, let kp = keyPair else { return }
+        guard let cert = certificate, let kp = keyPair else {
+            log("HATA: saveIdentity — cert veya keyPair nil")
+            return
+        }
         let label = KeychainHelper.identityLabel(ip: ip)
         KeychainHelper.deleteIdentity(label: label)
-        KeychainHelper.storeIdentity(cert: cert, privateKey: kp.privateKey, label: label)
-        log("Keychain'e kaydedildi (\(ip))")
+        let ok = KeychainHelper.storeIdentity(cert: cert, privateKey: kp.privateKey, label: label)
+        if ok {
+            let verify = KeychainHelper.loadIdentity(label: label)
+            log(verify != nil ? "✓ Keychain kaydedildi ve doğrulandı (\(ip))" : "HATA: Kaydedildi ama yüklenemedi (\(ip))")
+        } else {
+            log("HATA: Keychain'e kayıt başarısız (\(ip))")
+        }
     }
 
     func close() { connection?.cancel(); connection = nil }
