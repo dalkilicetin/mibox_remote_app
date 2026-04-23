@@ -209,7 +209,7 @@ final class PairingService {
 
     private func buildPairingRequest() -> Data {
         let svc = Data("ATV Remote".utf8)
-        let cli = Data("com.mibox.remote".utf8)
+        let cli = Data("com.google.android.tv.remote".utf8)
         let inner = Data([10, UInt8(svc.count)]) + svc + Data([18, UInt8(cli.count)]) + cli
         return Data([8,2,16,200,1,82,UInt8(inner.count)]) + inner
     }
