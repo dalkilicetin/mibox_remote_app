@@ -56,17 +56,11 @@ struct SetupView: View {
                     }
                     deviceList
                     bottomBar
-                }
-            }
-            .navigationDestination(item: $destination) { dest in
-                switch dest {
-                case .pairing(let d):
-                    PairingView(device: d) { success in
-                        if success { destination = .remote(d, nil) }
-                        else { destination = nil }
+
+                    // Hidden NavigationLinks for old iOS support
+                    NavigationLink(destination: destinationView, isActive: .init(get: { destination != nil }, set: { if !$0 { destination = nil } })) {
+                        EmptyView()
                     }
-                case .remote(let d, let svc):
-                    RemoteView(device: d, apkService: svc)
                 }
             }
         }
@@ -77,6 +71,21 @@ struct SetupView: View {
                 .keyboardType(.numbersAndPunctuation)
             Button("Bağlan") { connectManual() }
             Button("İptal", role: .cancel) { }
+        }
+    }
+
+    @ViewBuilder
+    private var destinationView: some View {
+        if let dest = destination {
+            switch dest {
+            case .pairing(let d):
+                PairingView(device: d) { success in
+                    if success { destination = .remote(d, nil) }
+                    else { destination = nil }
+                }
+            case .remote(let d, let svc):
+                RemoteView(device: d, apkService: svc)
+            }
         }
     }
 
