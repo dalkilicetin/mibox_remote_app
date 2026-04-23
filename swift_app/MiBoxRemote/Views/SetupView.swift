@@ -7,13 +7,39 @@ struct SetupView: View {
     @State private var showManualEntry = false
     @State private var manualIP = ""
 
-    enum NavDest: Identifiable {
+    enum NavDest: Identifiable, Hashable {
         case pairing(DiscoveredDevice)
         case remote(DiscoveredDevice, MiBoxService?)
+
         var id: String {
             switch self {
             case .pairing(let d): return "pair-\(d.ip)"
             case .remote(let d, _): return "remote-\(d.ip)"
+            }
+        }
+
+        func hash(into hasher: inout Hasher) {
+            switch self {
+            case .pairing(let d):
+                hasher.combine(0)
+                hasher.combine(d)
+            case .remote(let d, let s):
+                hasher.combine(1)
+                hasher.combine(d)
+                if let s = s {
+                    hasher.combine(ObjectIdentifier(s))
+                }
+            }
+        }
+
+        static func == (lhs: NavDest, rhs: NavDest) -> Bool {
+            switch (lhs, rhs) {
+            case (.pairing(let a), .pairing(let b)):
+                return a == b
+            case (.remote(let a, let sa), .remote(let b, let sb)):
+                return a == b && sa === sb
+            default:
+                return false
             }
         }
     }
