@@ -2,6 +2,22 @@ import Foundation
 import Network
 import Security
 
+// MARK: - ATV Remote v2 Protocol Notes
+//
+// Gerçek handshake sırası (androidtvremote2 debug loglarından doğrulandı):
+//
+//   [TLS bağlantı kurulur]
+//   TV  → Client : remote_configure { code1: 623, device_info: {...} }   tag=0x0A
+//   Client → TV  : remote_configure { code1: 611, device_info: {...} }
+//   TV  → Client : remote_set_active { }                                  tag=0x1A
+//   Client → TV  : remote_set_active { active: 611 }
+//   TV  → Client : remote_start { ... }                                   tag=0x12
+//   [komutlar gönderilebilir]
+//
+// Ping/Pong: TV field-8 ping gönderir, client field-9 pong ile aynı val'i echo'lar.
+// Key:       field-10 → { field-1: keyCode, field-2: direction }
+//            direction: 1=DOWN, 2=UP, 3=SHORT (down+up birleşik)
+
 @MainActor
 final class AtvRemoteService: ObservableObject {
     @Published var isConnected = false
@@ -10,6 +26,7 @@ final class AtvRemoteService: ObservableObject {
     private var connection: NWConnection?
     private var recvBuf = Data()
     private var configured = false
+    private var setActiveCode = 611   // TV'den gelen code1'e göre güncellenir
     private var pingTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     private var ip = ""
@@ -113,69 +130,122 @@ final class AtvRemoteService: ObservableObject {
     private func handleMsg(_ msg: Data) {
         guard !msg.isEmpty else { return }
         switch msg[msg.startIndex] {
-        case 0x0A:
+
+        case 0x0A: // remote_configure — TV kendi desteklediği feature set'ini bildiriyor
             guard !configured else { return }
-            configured = true; log("← configure (TV)")
+            configured = true
+            // TV'den gelen code1'i parse edip setActiveCode'a yaz.
+            // Mesaj: 0x0A <varint len> <inner: 0x08 <varint code1> ...>
+            if let tvCode1 = parseInnerCode1(msg) {
+                setActiveCode = tvCode1
+                log("← remote_configure (TV) code1=\(tvCode1)")
+            } else {
+                setActiveCode = 611
+                log("← remote_configure (TV) code1=parse_failed, default=611")
+            }
             sendConfigure()
-            // Android TV Remote v2 handshakes often expect a rapid response.
-            // Sending SetActive immediately after configure is standard for some TV models.
+            // NOT: set_active'yi burada GÖNDERMIYORUZ.
+            // TV configure'a cevaben remote_set_active {} gönderecek (tag=0x1A),
+            // biz ona cevap vereceğiz. Erken göndermek TV handshake state machine'ini bozuyor.
+
+        case 0x1A: // remote_set_active — TV "hazırım, seni tanıdım" diyor
+            log("← remote_set_active (TV) → cevap: active=\(setActiveCode)")
             sendSetActive()
-        case 0x1A:
-            log("← handshake_ack (0x1a)")
-        case 0x42:
-            log("→ pong"); sendPong(msg)
-        case 0x4A: break
-        case 0x12:
-            log("✓ Handshake tamamlandı")
+
+        case 0x12: // remote_start — handshake tamamlandı, komut gönderilebilir
+            log("✓ remote_start — bağlantı hazır")
+
+        case 0x42: // ping
+            sendPong(msg)
+
+        case 0x4A: break // volume / app info bilgisi, şimdilik ignore
+
         default:
-            log("tag: 0x\(String(format:"%02x", msg[msg.startIndex]))")
+            log("← unknown tag: 0x\(String(format:"%02x", msg[msg.startIndex]))")
         }
     }
 
     // MARK: - Protocol messages
 
+    /// TV'nin remote_configure mesajının inner payload'ından code1'i çıkarır.
+    /// msg yapısı: [0x0A] [varint innerLen] [inner: 0x08 <varint code1> 0x12 <len> <device_info>]
+    private func parseInnerCode1(_ msg: Data) -> Int? {
+        guard msg.count >= 3 else { return nil }
+        guard let (innerLen, n) = decodeVarint(msg, at: 1),
+              msg.count >= 1 + n + innerLen else { return nil }
+        let inner = Data(msg[(msg.startIndex + 1 + n)..<(msg.startIndex + 1 + n + innerLen)])
+        // inner[0] = 0x08 (field 1, wire type 0 = varint)
+        guard inner.count >= 2, inner[inner.startIndex] == 0x08 else { return nil }
+        guard let (code1, _) = decodeVarint(inner, at: 1) else { return nil }
+        return code1
+    }
+
     private func sendConfigure() {
+        // device_info (inner message, OuterMessage.remote_configure.device_info):
+        //   field 3 (unknown1) : 1
+        //   field 4 (unknown2) : "1"
+        //   field 5 (package_name) : kendi app bundle id — TV'nin paketi değil!
+        //   field 6 (app_version) : "1.0.0"
         let info = ProtoWriter()
-        info.writeVarint(field: 1, value: 1)
-        info.writeString(field: 2, value: "MiBoxRemote")
         info.writeVarint(field: 3, value: 1)
         info.writeString(field: 4, value: "1")
-        info.writeString(field: 5, value: "com.google.android.tv.remote.service")
+        info.writeString(field: 5, value: "com.mibox.remote")
         info.writeString(field: 6, value: "1.0.0")
 
+        // remote_configure:
+        //   field 1 (code1) : 611 — client'ın desteklediği feature bitmask (referans değer)
+        //   field 2 (device_info) : yukarıdaki info
         let cfg = ProtoWriter()
-        cfg.writeVarint(field: 1, value: 622)
+        cfg.writeVarint(field: 1, value: 611)
         cfg.writeBytes(field: 2, value: info.toData())
 
-        let msg = ProtoWriter()
-        msg.writeBytes(field: 1, value: cfg.toData())
+        // OuterMessage field 1 = remote_configure
+        let outer = ProtoWriter()
+        outer.writeBytes(field: 1, value: cfg.toData())
 
-        sendMsg(msg.toData()); log("→ configure")
+        sendMsg(outer.toData()); log("→ remote_configure code1=611")
     }
 
     private func sendSetActive() {
-        let a = ProtoWriter(); a.writeVarint(field: 1, value: 1)
-        let m = ProtoWriter(); m.writeBytes(field: 2, value: a.toData())
-        sendMsg(m.toData()); log("→ set_active")
+        // OuterMessage field 3 = remote_set_active { active: setActiveCode }
+        let inner = ProtoWriter()
+        inner.writeVarint(field: 1, value: setActiveCode)
+
+        let outer = ProtoWriter()
+        outer.writeBytes(field: 3, value: inner.toData())
+
+        sendMsg(outer.toData()); log("→ remote_set_active active=\(setActiveCode)")
     }
 
     private func sendPong(_ ping: Data) {
-        let arr = Array(ping)
-        var val = 0, shift = 0
-        if arr.count >= 4 && arr[2] == 0x08 {
-            for i in 3..<min(arr.count, 8) {
-                val |= Int(arr[i] & 0x7F) << shift; shift += 7
-                if arr[i] & 0x80 == 0 { break }
-            }
-        }
+        // Ping: OuterMessage field-8 (tag=0x42) → { field-1: val }
+        // Pong: OuterMessage field-9 (tag=0x4A) → { field-1: val }  (aynı val'i echo'la)
+        let val = parsePingVal(ping)
         let inner = ProtoWriter(); inner.writeVarint(field: 1, value: val)
         let outer = ProtoWriter(); outer.writeBytes(field: 9, value: inner.toData())
         sendMsg(outer.toData())
+        log("← ping val=\(val) → pong")
+    }
+
+    /// ping mesajından (msg[0]=0x42) inner val1'i varint-aware şekilde parse et
+    private func parsePingVal(_ msg: Data) -> Int {
+        // msg: [0x42] [varint innerLen] [inner: 0x08 <varint val>]
+        guard msg.count >= 3 else { return 0 }
+        guard let (innerLen, n) = decodeVarint(msg, at: 1),
+              msg.count >= 1 + n + innerLen, innerLen >= 2 else { return 0 }
+        let inner = Data(msg[(msg.startIndex + 1 + n)..<(msg.startIndex + 1 + n + innerLen)])
+        guard inner[inner.startIndex] == 0x08 else { return 0 }
+        guard let (val, _) = decodeVarint(inner, at: 1) else { return 0 }
+        return val
     }
 
     private func sendDir(_ code: Int, _ dir: Int) {
-        let inner = ProtoWriter(); inner.writeVarint(field: 1, value: code); inner.writeVarint(field: 2, value: dir)
-        let outer = ProtoWriter(); outer.writeBytes(field: 10, value: inner.toData())
+        // OuterMessage field-10 → RemoteKeyEvent { key_code: code, direction: dir }
+        let inner = ProtoWriter()
+        inner.writeVarint(field: 1, value: code)
+        inner.writeVarint(field: 2, value: dir)
+        let outer = ProtoWriter()
+        outer.writeBytes(field: 10, value: inner.toData())
         sendMsg(outer.toData())
         log("→ key \(code) dir \(dir)")
     }
@@ -185,14 +255,17 @@ final class AtvRemoteService: ObservableObject {
         conn.send(content: encodeVarint(payload.count) + payload, completion: .idempotent)
     }
 
+    // Bağlandıktan 3 saniye sonra hâlâ TV configure göndermemişse biz başlatıyoruz.
+    // (Bazı TV modelleri veya eski firmware'ler geç gönderebilir.)
     private func scheduleFallbackConfigure() {
         Task {
-            try? await Task.sleep(for: .seconds(2))
+            try? await Task.sleep(for: .seconds(3))
             guard isConnected, !configured else { return }
             configured = true
-            log("→ fallback configure")
+            log("→ fallback configure (TV configure göndermedi, biz başlatıyoruz)")
             sendConfigure()
-            try? await Task.sleep(for: .milliseconds(100))
+            // Fallback'te set_active'yi de biz gönderiyoruz çünkü 0x1A gelmeyebilir
+            try? await Task.sleep(for: .milliseconds(300))
             sendSetActive()
         }
     }
@@ -200,12 +273,11 @@ final class AtvRemoteService: ObservableObject {
     private func startPing() {
         pingTask?.cancel()
         pingTask = Task {
+            // TV kendi ping'ini gönderir (her ~5s), biz pong'larız (handleMsg 0x42).
+            // Bu task sadece bağlantı canlılık kontrolü için tutuldu.
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(5))
+                try? await Task.sleep(for: .seconds(30))
                 guard isConnected else { break }
-                let inner = ProtoWriter(); inner.writeVarint(field: 1, value: 0)
-                let outer = ProtoWriter(); outer.writeBytes(field: 8, value: inner.toData())
-                sendMsg(outer.toData())
             }
         }
     }
