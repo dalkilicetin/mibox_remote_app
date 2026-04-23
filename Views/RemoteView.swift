@@ -10,6 +10,7 @@ struct RemoteView: View {
     @State private var apkConnected = false
     @State private var logs: [String] = []
     @State private var selectedTab = 0
+    @State private var isReconnecting = false
     @Environment(\.dismiss) private var dismiss
 
     private var hasApk: Bool { apkService != nil }
@@ -18,6 +19,9 @@ struct RemoteView: View {
         ZStack { Color.appBg.ignoresSafeArea()
             VStack(spacing: 0) {
                 statusBar
+                if !atvConnected {
+                    reconnectBanner
+                }
                 tabBar
                 tabContent
             }
@@ -41,18 +45,56 @@ struct RemoteView: View {
                 Text(apkConnected ? "Cursor" : "Cursor yok")
                     .font(.system(size: 11)).foregroundColor(apkConnected ? .greenOk : .red)
             }
-            Image(systemName: "tv").font(.system(size: 11))
-                .foregroundColor(atvConnected ? .greenOk : .gray)
-            Text(atvConnected ? "TV Remote" : "TV bağlantısı yok")
-                .font(.system(size: 11)).foregroundColor(atvConnected ? .greenOk : .gray)
+            Circle()
+                .fill(atvConnected ? Color.greenOk : .red)
+                .frame(width: 8, height: 8)
+            Text(atvConnected ? "TV Remote" : "Bağlantı yok")
+                .font(.system(size: 11)).foregroundColor(atvConnected ? .greenOk : .red)
             Spacer()
             Text(device.ip).font(.system(size: 11)).foregroundColor(.gray)
             Button(action: { dismiss() }) {
-                Image(systemName: "gearshape").foregroundColor(.gray).font(.system(size: 16))
+                Image(systemName: "xmark").foregroundColor(.gray).font(.system(size: 14))
             }
         }
-        .padding(.horizontal, 16).padding(.vertical, 6)
+        .padding(.horizontal, 16).padding(.vertical, 8)
         .background(Color.cardBg)
+    }
+
+    // MARK: - Reconnect banner (sadece bağlantı yokken görünür)
+
+    private var reconnectBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundColor(Color(hex: "fbbf24"))
+                .font(.system(size: 13))
+            Text("TV'ye bağlanılamıyor")
+                .font(.system(size: 13))
+                .foregroundColor(.white)
+            Spacer()
+            Button(action: reconnect) {
+                HStack(spacing: 6) {
+                    if isReconnecting {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .scaleEffect(0.7)
+                            .tint(.white)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 12))
+                    }
+                    Text(isReconnecting ? "Bağlanıyor..." : "Yeniden Bağlan")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(Color.redAccent)
+                .cornerRadius(8)
+            }
+            .disabled(isReconnecting)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .background(Color(hex: "1a1a2e"))
+        .overlay(Rectangle().frame(height: 1).foregroundColor(Color(hex: "fbbf24").opacity(0.4)), alignment: .bottom)
     }
 
     // MARK: - Tab bar
@@ -87,19 +129,30 @@ struct RemoteView: View {
             switch selectedTab {
             case 0: AirMouseView(apk: svc, atv: atv)
             case 1: TouchpadView(apk: svc, atv: atv)
-            default: DebugView(logs: $logs, onClear: { logs.removeAll() }, onReconnect: { Task { await initAtv() } })
+            default: DebugView(logs: $logs, onClear: { logs.removeAll() }, onReconnect: reconnect)
             }
         } else {
             switch selectedTab {
             case 0: DpadView(atv: atv)
-            default: DebugView(logs: $logs, onClear: { logs.removeAll() }, onReconnect: { Task { await initAtv() } })
+            default: DebugView(logs: $logs, onClear: { logs.removeAll() }, onReconnect: reconnect)
             }
         }
+    }
+
+    // MARK: - Reconnect
+
+    private func reconnect() {
+        guard !isReconnecting else { return }
+        Task { await initAtv() }
     }
 
     // MARK: - ATV init
 
     private func initAtv() async {
+        guard !isReconnecting else { return }
+        isReconnecting = true
+        atv.disconnectPermanent()
+
         atv.onLog = { msg in
             Task { @MainActor in
                 let ts = Calendar.current.component(.second, from: Date())
@@ -110,12 +163,11 @@ struct RemoteView: View {
 
         guard let identity = KeychainHelper.loadIdentity(label: KeychainHelper.identityLabel(ip: device.ip)) else {
             addLog("HATA: Sertifika bulunamadı!")
+            isReconnecting = false
             return
         }
         atv.setIdentity(identity)
 
-        // Pairing sonrası TV remote portu açmak için kısa süre bekleyebilir.
-        // İlk deneme başarısız olursa 2 kez daha dene.
         var ok = false
         for attempt in 1...3 {
             ok = await atv.connect(ip: device.ip, port: device.remotePort)
@@ -125,6 +177,7 @@ struct RemoteView: View {
         }
         atvConnected = ok
         addLog(ok ? "ATV bağlandı ✓" : "ATV bağlantısı başarısız! (3 deneme)")
+        isReconnecting = false
     }
 
     private func addLog(_ msg: String) {
