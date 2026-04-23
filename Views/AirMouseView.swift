@@ -124,7 +124,7 @@ struct AirMouseView: View {
                         if moved < Self.TAP_MAX_MOVE && ms < Self.TAP_MAX_MS {
                             if airOn { apk.tap(); if atv.isConnected { atv.sendKey(AtvKey.dpadCenter) } }
                             else { sendKey(AtvKey.dpadCenter) }
-                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                         }
                         tapLast = .zero; tapAccumV = 0; tapAccumH = 0
                     }

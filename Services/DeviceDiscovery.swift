@@ -28,15 +28,23 @@ final class DeviceDiscovery: ObservableObject {
         // UDP APK discovery (parallel, short)
         let udpResults = await MiBoxService.discoverDevices(timeout: .seconds(2))
         let apkIPs = Set(udpResults.compactMap { $0["ip"] as? String })
+        var udpPorts: [String: (pairing: Int, remote: Int)] = [:]
+        for r in udpResults {
+            if let ip = r["ip"] as? String {
+                let pairing = r["atvPairingPort"] as? Int ?? 6467
+                let remote  = r["atvRemotePort"]  as? Int ?? 6466
+                udpPorts[ip] = (pairing, remote)
+            }
+        }
 
         // mDNS
-        let mdnsIPs = await scanMDNS(apkIPs: apkIPs)
+        let mdnsIPs = await scanMDNS(apkIPs: apkIPs, udpPorts: udpPorts)
         var foundIPs = mdnsIPs
 
         // TCP sweep if nothing found
         if devices.isEmpty {
             status = "Adım 2: TCP port tarama..."
-            let tcpIPs = await scanTCP(apkIPs: apkIPs)
+            let tcpIPs = await scanTCP(apkIPs: apkIPs, udpPorts: udpPorts)
             foundIPs.formUnion(tcpIPs)
         }
 
@@ -46,7 +54,7 @@ final class DeviceDiscovery: ObservableObject {
             : "\(devices.count) cihaz bulundu"
     }
 
-    private func scanMDNS(apkIPs: Set<String>) async -> Set<String> {
+    private func scanMDNS(apkIPs: Set<String>, udpPorts: [String: (pairing: Int, remote: Int)]) async -> Set<String> {
         await withCheckedContinuation { (cont: CheckedContinuation<Set<String>, Never>) in
             var foundIPs = Set<String>()
             var resumed = false
@@ -64,10 +72,13 @@ final class DeviceDiscovery: ObservableObject {
                         let host = "\(name).\(type)\(domain)"
                         if let ip = await resolve(hostname: host), !foundIPs.contains(ip) {
                             foundIPs.insert(ip)
+                            let ports = udpPorts[ip]
                             self.addDevice(DiscoveredDevice(
                                 ip: ip,
                                 hasCert: KeychainHelper.hasCert(ip: ip),
-                                hasApk: apkIPs.contains(ip)
+                                hasApk: apkIPs.contains(ip),
+                                pairingPort: ports?.pairing ?? 6467,
+                                remotePort:  ports?.remote  ?? 6466
                             ))
                         }
                     }
@@ -85,34 +96,39 @@ final class DeviceDiscovery: ObservableObject {
         }
     }
 
-    private func scanTCP(apkIPs: Set<String>) async -> Set<String> {
+    private func scanTCP(apkIPs: Set<String>, udpPorts: [String: (pairing: Int, remote: Int)]) async -> Set<String> {
         let subnets = localSubnets()
-        let foundIPs = ManagedSet() // Use a thread-safe helper if needed, or handle in task group
+        let allIPs  = subnets.flatMap { s in (1...254).map { "\(s).\($0)" } }
 
-        await withTaskGroup(of: String?.self) { group in
-            for subnet in subnets {
-                for i in 1...254 {
-                    let ip = "\(subnet).\(i)"
+        let batchSize = 40
+        var idx = 0
+        while idx < allIPs.count {
+            let batch = Array(allIPs[idx..<min(idx + batchSize, allIPs.count)])
+            idx += batchSize
+            await withTaskGroup(of: String?.self) { group in
+                for ip in batch {
                     group.addTask {
                         guard await tcpProbe(ip: ip, port: 6467, timeoutSec: 0.5) else { return nil }
                         return ip
                     }
                 }
-            }
-
-            for await ip in group {
-                if let ip = ip {
-                    await MainActor.run {
-                        self.addDevice(DiscoveredDevice(
-                            ip: ip,
-                            hasCert: KeychainHelper.hasCert(ip: ip),
-                            hasApk: apkIPs.contains(ip)
-                        ))
+                for await ip in group {
+                    if let ip {
+                        let ports = udpPorts[ip]
+                        await MainActor.run {
+                            self.addDevice(DiscoveredDevice(
+                                ip: ip,
+                                hasCert: KeychainHelper.hasCert(ip: ip),
+                                hasApk: apkIPs.contains(ip),
+                                pairingPort: ports?.pairing ?? 6467,
+                                remotePort:  ports?.remote  ?? 6466
+                            ))
+                        }
                     }
                 }
             }
         }
-        return [] // Return value not strictly needed as we update devices array directly
+        return []
     }
 
     private func addDevice(_ d: DiscoveredDevice) {

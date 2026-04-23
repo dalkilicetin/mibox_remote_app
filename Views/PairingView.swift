@@ -5,7 +5,6 @@ struct PairingView: View {
     let onDone: (Bool) -> Void
 
     @StateObject private var vm = PairingVM()
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         ZStack { Color.appBg.ignoresSafeArea()
@@ -30,7 +29,7 @@ struct PairingView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarColorScheme(.dark, for: .navigationBar)
         .task { await vm.start(device: device) }
-        .onChange(of: vm.pairingSuccess) { success in
+        .onReceive(vm.$pairingSuccess) { success in
             if success { onDone(true) }
         }
     }
@@ -118,8 +117,10 @@ final class PairingVM: ObservableObject {
     @Published var pairingSuccess = false
 
     private let svc = PairingService()
+    private var deviceIP = ""
 
     func start(device: DiscoveredDevice) async {
+        self.deviceIP = device.ip
         svc.onLog = { [weak self] msg in Task { @MainActor in self?.addLog(msg) } }
         do {
             status = "Sertifika oluşturuluyor..."
@@ -159,7 +160,8 @@ final class PairingVM: ObservableObject {
         do {
             let ok = try await svc.sendPin(p)
             if ok {
-                svc.saveIdentity(ip: "")   // handled inside PairingView via device.ip below
+                svc.saveIdentity(ip: deviceIP)
+                KeychainHelper.saveInt(6466, key: KeychainHelper.remotePortKey(ip: deviceIP))
                 status = "Eşleştirme başarılı!"
                 pairingSuccess = true
             } else {
@@ -170,8 +172,6 @@ final class PairingVM: ObservableObject {
         }
         verifying = false
     }
-
-    func saveIdentity(ip: String) { svc.saveIdentity(ip: ip) }
 
     private func addLog(_ msg: String) {
         let ts = Calendar.current.component(.second, from: Date())

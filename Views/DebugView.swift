@@ -27,21 +27,15 @@ struct DebugView: View {
                 Text("Log yok").foregroundColor(.gray)
                 Spacer()
             } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 2) {
-                            ForEach(Array(logs.enumerated()), id: \.offset) { idx, line in
-                                Text(line)
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundColor(color(for: line))
-                                    .id(idx)
-                            }
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(logs.reversed().enumerated()), id: \.offset) { _, line in
+                            Text(line)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(color(for: line))
                         }
-                        .padding(.horizontal, 12).padding(.bottom, 12)
                     }
-                    .onChange(of: logs.count) { _ in
-                        proxy.scrollTo(logs.count - 1, anchor: .bottom)
-                    }
+                    .padding(.horizontal, 12).padding(.bottom, 12)
                 }
             }
         }

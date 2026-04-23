@@ -107,7 +107,7 @@ struct TouchpadView: View {
         Button(action: {
             apk.tap()
             if atv.isConnected { atv.sendKey(AtvKey.dpadCenter) }
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         }) {
             HStack(spacing: 8) {
                 Image(systemName: "cursorarrow.click").foregroundColor(.greenOk)
@@ -260,7 +260,7 @@ final class TouchpadUIView: UIView {
         if now.timeIntervalSince(lastTap) < 0.3 {
             apk.tap()
             if atv.isConnected { atv.sendKey(23) }
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         }
         lastTap = now
     }

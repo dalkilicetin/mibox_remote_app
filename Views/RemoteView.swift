@@ -97,14 +97,6 @@ struct RemoteView: View {
     // MARK: - ATV init
 
     private func initAtv() async {
-        atv.onLog = { [weak atv] msg in
-            Task { @MainActor in
-                let ts = Calendar.current.component(.second, from: Date())
-                var logs = logs
-                logs.append("[\(ts)s] \(msg)")
-                if logs.count > 200 { logs.removeFirst() }
-            }
-        }
         atv.onLog = { msg in
             Task { @MainActor in
                 let ts = Calendar.current.component(.second, from: Date())
