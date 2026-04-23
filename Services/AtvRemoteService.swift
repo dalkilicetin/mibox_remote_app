@@ -2,21 +2,33 @@ import Foundation
 import Network
 import Security
 
-// MARK: - ATV Remote v2 Protocol Notes
+// MARK: - ATV Remote v2 Protocol (remotemessage.proto field mapping)
 //
-// Gerçek handshake sırası (androidtvremote2 debug loglarından doğrulandı):
+// RemoteMessage field → wire type 2 (length-delimited) tag bytes:
+//   field  1  remote_configure     → 0x0A
+//   field  2  remote_set_active    → 0x12   ← NOT: 0x1A remote_ERROR'dur!
+//   field  3  remote_error         → 0x1A
+//   field  8  remote_ping_request  → 0x42
+//   field  9  remote_ping_response → 0x4A
+//   field 10  remote_key_inject    → 0x52
+//   field 40  remote_start         → 0xC2, 0x02  (2-byte varint tag)
+//   field 50  remote_set_volume    → 0x92, 0x03
 //
-//   [TLS bağlantı kurulur]
-//   TV  → Client : remote_configure { code1: 623, device_info: {...} }   tag=0x0A
-//   Client → TV  : remote_configure { code1: 611, device_info: {...} }
-//   TV  → Client : remote_set_active { }                                  tag=0x1A
+// Handshake sırası (referans: androidtvremote2/remote.py):
+//   TV  → Client : remote_configure { code1: 623, device_info }   [0x0A]
+//   Client → TV  : remote_configure { code1: 611, device_info }
+//   TV  → Client : remote_set_active { }                           [0x12]
 //   Client → TV  : remote_set_active { active: 611 }
-//   TV  → Client : remote_start { ... }                                   tag=0x12
+//   TV  → Client : remote_start { started: true }                  [0xC2,0x02]
 //   [komutlar gönderilebilir]
 //
-// Ping/Pong: TV field-8 ping gönderir, client field-9 pong ile aynı val'i echo'lar.
-// Key:       field-10 → { field-1: keyCode, field-2: direction }
-//            direction: 1=DOWN, 2=UP, 3=SHORT (down+up birleşik)
+// Ping/Pong:
+//   TV  → Client : remote_ping_request  { val1: N }    [0x42]
+//   Client → TV  : remote_ping_response { val1: N }    [0x4A]
+//
+// Key:
+//   Client → TV  : remote_key_inject { key_code: N, direction: D }  [0x52]
+//   direction: 1=START_LONG, 2=END_LONG, 3=SHORT
 
 @MainActor
 final class AtvRemoteService: ObservableObject {
@@ -26,7 +38,7 @@ final class AtvRemoteService: ObservableObject {
     private var connection: NWConnection?
     private var recvBuf = Data()
     private var configured = false
-    private var setActiveCode = 611   // TV'den gelen code1'e göre güncellenir
+    private var activeFeatures = 611   // TV code1 ile AND alınır, 611 sabit başlangıç
     private var pingTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     private var ip = ""
@@ -40,8 +52,9 @@ final class AtvRemoteService: ObservableObject {
     func connect(ip: String, port: Int = 6466) async -> Bool {
         self.ip = ip; self.port = port
         cancelInternal()
-        guard let identity else { log("Sertifika yok"); return false }
+        guard let identity else { log("❌ Sertifika yok"); return false }
 
+        log("🔌 Bağlanıyor → \(ip):\(port)")
         let tlsOpts = makeTLS(identity: identity)
         let params  = NWParameters(tls: tlsOpts, tcp: .init())
         let conn    = NWConnection(host: .init(ip), port: .init(rawValue: UInt16(port))!, using: params)
@@ -51,36 +64,48 @@ final class AtvRemoteService: ObservableObject {
             var done = false
             conn.stateUpdateHandler = { [weak self] state in
                 switch state {
+                case .preparing:
+                    Task { @MainActor in self?.log("🔄 TLS hazırlanıyor...") }
                 case .ready:
                     guard !done else { return }; done = true
                     Task { @MainActor in
                         self?.isConnected = true
                         self?.startReceive()
                         self?.scheduleFallbackConfigure()
-                        self?.startPing()
-                        self?.log("Bağlandı: \(ip):\(port)")
+                        self?.log("✅ TCP+TLS bağlandı: \(ip):\(port)")
                         cont.resume(returning: true)
                     }
                 case .failed(let e):
                     guard !done else { return }; done = true
-                    Task { @MainActor in self?.log("Hata: \(e)"); self?.onDisconnect() }
+                    Task { @MainActor in
+                        self?.log("❌ Bağlantı hatası: \(e.localizedDescription)")
+                        self?.onDisconnect()
+                    }
                     cont.resume(returning: false)
                 case .cancelled:
                     guard !done else { return }; done = true
+                    Task { @MainActor in self?.log("🚫 Bağlantı iptal edildi") }
                     cont.resume(returning: false)
+                case .waiting(let e):
+                    Task { @MainActor in self?.log("⏳ Bekleniyor: \(e.localizedDescription)") }
                 default: break
                 }
             }
             conn.start(queue: .global())
             Task {
                 try? await Task.sleep(for: .seconds(5))
-                guard !done else { return }; done = true; conn.cancel(); cont.resume(returning: false)
+                guard !done else { return }; done = true
+                Task { @MainActor in self?.log("⏰ Bağlantı zaman aşımı (5s)") }
+                conn.cancel(); cont.resume(returning: false)
             }
         }
     }
 
     func sendKey(_ code: Int, longPress: Bool = false) {
-        guard isConnected else { return }
+        guard isConnected else {
+            log("⚠️ sendKey çağrıldı ama bağlı değil (code=\(code))")
+            return
+        }
         if longPress {
             sendDir(code, 1)
             Task { try? await Task.sleep(for: .milliseconds(600)); sendDir(code, 2) }
@@ -89,7 +114,10 @@ final class AtvRemoteService: ObservableObject {
         }
     }
 
-    func disconnectPermanent() { reconnectTask?.cancel(); reconnectTask = nil; cancelInternal() }
+    func disconnectPermanent() {
+        log("🛑 disconnectPermanent çağrıldı")
+        reconnectTask?.cancel(); reconnectTask = nil; cancelInternal()
+    }
 
     // MARK: - TLS
 
@@ -97,6 +125,7 @@ final class AtvRemoteService: ObservableObject {
         let opts = NWProtocolTLS.Options()
         sec_protocol_options_set_local_identity(opts.securityProtocolOptions, sec_identity_create(identity)!)
         sec_protocol_options_set_verify_block(opts.securityProtocolOptions, { _, _, complete in
+            // TV self-signed cert kullanıyor, doğrulamayı bypass ediyoruz
             complete(true)
         }, .global())
         return opts
@@ -111,125 +140,148 @@ final class AtvRemoteService: ObservableObject {
             guard let self else { return }
             if let data { Task { @MainActor in self.handleData(data) } }
             if err == nil && !done { self.receive() }
-            else { Task { @MainActor in self.onDisconnect() } }
+            else {
+                if let err { Task { @MainActor in self.log("📡 Receive hata: \(err)") } }
+                Task { @MainActor in self.onDisconnect() }
+            }
         }
     }
 
     private func handleData(_ data: Data) {
         recvBuf.append(data)
-        log("← raw(\(data.count)b): \(data.prefix(8).map { String(format:"%02x",$0) }.joined(separator:" "))")
+        log("📥 raw(\(data.count)b): \(data.prefix(8).map { String(format:"%02x",$0) }.joined(separator:" "))")
         while !recvBuf.isEmpty {
-            guard let (len, n) = decodeVarint(recvBuf, at: 0), recvBuf.count >= n + len else { break }
+            guard let (len, n) = decodeVarint(recvBuf, at: 0), recvBuf.count >= n + len else {
+                log("⏸ Mesaj henüz tam değil (buf=\(recvBuf.count)b, beklenen=\(recvBuf.first.map{"\($0)b"} ?? "?"))")
+                break
+            }
             let msg = recvBuf[n..<(n + len)]
             recvBuf.removeSubrange(..<(n + len))
-            log("← msg(\(len)b): \(msg.prefix(8).map { String(format:"%02x",$0) }.joined(separator:" "))")
+            log("📨 msg(\(len)b): \(msg.prefix(12).map { String(format:"%02x",$0) }.joined(separator:" "))")
             handleMsg(Data(msg))
         }
     }
 
-    private func handleMsg(_ msg: Data) {
-        guard !msg.isEmpty else { return }
-        switch msg[msg.startIndex] {
+    // MARK: - Message dispatch
+    // tag = msg[0] = (field_number << 3) | wire_type
 
-        case 0x0A: // remote_configure — TV kendi desteklediği feature set'ini bildiriyor
-            guard !configured else { return }
+    private func handleMsg(_ msg: Data) {
+        guard !msg.isEmpty else { log("⚠️ Boş mesaj geldi"); return }
+        let tag = msg[msg.startIndex]
+        let tagHex = String(format: "0x%02X", tag)
+
+        switch tag {
+
+        case 0x0A: // field 1 = remote_configure
+            guard !configured else {
+                log("ℹ️ remote_configure tekrar geldi, ignore (zaten configured)")
+                return
+            }
             configured = true
-            // TV'den gelen code1'i parse edip setActiveCode'a yaz.
-            // Mesaj: 0x0A <varint len> <inner: 0x08 <varint code1> ...>
-            if let tvCode1 = parseInnerCode1(msg) {
-                setActiveCode = tvCode1
-                log("← remote_configure (TV) code1=\(tvCode1)")
+            if let tvCode1 = parseField1Varint(msg) {
+                // referans: active_features &= supported_features
+                activeFeatures = 611 & tvCode1
+                log("📺 remote_configure ← TV code1=\(tvCode1), bizim activeFeatures=\(activeFeatures)")
             } else {
-                setActiveCode = 611
-                log("← remote_configure (TV) code1=parse_failed, default=611")
+                log("📺 remote_configure ← TV (code1 parse edilemedi, default=611)")
             }
             sendConfigure()
-            // NOT: set_active'yi burada GÖNDERMIYORUZ.
-            // TV configure'a cevaben remote_set_active {} gönderecek (tag=0x1A),
-            // biz ona cevap vereceğiz. Erken göndermek TV handshake state machine'ini bozuyor.
+            // NOT: set_active göndermiyoruz, TV bize 0x12 (remote_set_active) gönderecek
 
-        case 0x1A: // remote_set_active — TV "hazırım, seni tanıdım" diyor
-            log("← remote_set_active (TV) → cevap: active=\(setActiveCode)")
+        case 0x12: // field 2 = remote_set_active
+            log("🤝 remote_set_active ← TV → cevap: active=\(activeFeatures)")
             sendSetActive()
 
-        case 0x12: // remote_start — handshake tamamlandı, komut gönderilebilir
-            log("✓ remote_start — bağlantı hazır")
+        case 0x1A: // field 3 = remote_error (bu set_active DEĞİL!)
+            let errBytes = msg.dropFirst().prefix(8).map { String(format:"%02x",$0) }.joined(separator:" ")
+            log("⚠️ remote_error ← TV: \(errBytes)")
 
-        case 0x42: // ping
+        case 0x42: // field 8 = remote_ping_request
             sendPong(msg)
 
-        case 0x4A: break // volume / app info bilgisi, şimdilik ignore
+        case 0x4A: // field 9 = remote_ping_response (TV bizim ping'imize cevap verirse)
+            log("🏓 remote_ping_response geldi")
+
+        case 0x52: // field 10 = remote_key_inject (TV tarafından echo)
+            log("🔑 remote_key_inject echo geldi")
 
         default:
-            log("← unknown tag: 0x\(String(format:"%02x", msg[msg.startIndex]))")
+            // 2-byte tag kontrolü: remote_start = field 40 → 0xC2, 0x02
+            if tag == 0xC2 && msg.count >= 2 && msg[msg.startIndex + 1] == 0x02 {
+                log("🚀 remote_start ← TV — handshake tamamlandı! Komutlar gönderilebilir.")
+                startPing()
+            } else {
+                log("❓ Bilinmeyen tag: \(tagHex) — tam msg: \(msg.prefix(8).map{String(format:"%02x",$0)}.joined(separator:" "))")
+            }
         }
     }
 
     // MARK: - Protocol messages
 
-    /// TV'nin remote_configure mesajının inner payload'ından code1'i çıkarır.
-    /// msg yapısı: [0x0A] [varint innerLen] [inner: 0x08 <varint code1> 0x12 <len> <device_info>]
-    private func parseInnerCode1(_ msg: Data) -> Int? {
+    /// TV'nin remote_configure mesajından code1 (field 1, varint) okur.
+    /// Yapı: [0x0A][varint innerLen][inner: 0x08 <varint code1> ...]
+    private func parseField1Varint(_ msg: Data) -> Int? {
         guard msg.count >= 3 else { return nil }
         guard let (innerLen, n) = decodeVarint(msg, at: 1),
               msg.count >= 1 + n + innerLen else { return nil }
         let inner = Data(msg[(msg.startIndex + 1 + n)..<(msg.startIndex + 1 + n + innerLen)])
-        // inner[0] = 0x08 (field 1, wire type 0 = varint)
         guard inner.count >= 2, inner[inner.startIndex] == 0x08 else { return nil }
         guard let (code1, _) = decodeVarint(inner, at: 1) else { return nil }
         return code1
     }
 
     private func sendConfigure() {
-        // device_info (inner message, OuterMessage.remote_configure.device_info):
-        //   field 3 (unknown1) : 1
-        //   field 4 (unknown2) : "1"
-        //   field 5 (package_name) : kendi app bundle id — TV'nin paketi değil!
-        //   field 6 (app_version) : "1.0.0"
+        // RemoteMessage.remote_configure (field 1 → outer tag 0x0A):
+        //   RemoteConfigure.code1       = activeFeatures      (field 1)
+        //   RemoteConfigure.device_info = RemoteDeviceInfo    (field 2)
+        //     RemoteDeviceInfo.unknown1     = 1               (field 3)
+        //     RemoteDeviceInfo.unknown2     = "1"             (field 4)
+        //     RemoteDeviceInfo.package_name = "atvremote"     (field 5)
+        //     RemoteDeviceInfo.app_version  = "1.0.0"         (field 6)
         let info = ProtoWriter()
         info.writeVarint(field: 3, value: 1)
         info.writeString(field: 4, value: "1")
-        info.writeString(field: 5, value: "com.mibox.remote")
+        info.writeString(field: 5, value: "atvremote")     // referans: "atvremote"
         info.writeString(field: 6, value: "1.0.0")
 
-        // remote_configure:
-        //   field 1 (code1) : 611 — client'ın desteklediği feature bitmask (referans değer)
-        //   field 2 (device_info) : yukarıdaki info
         let cfg = ProtoWriter()
-        cfg.writeVarint(field: 1, value: 611)
+        cfg.writeVarint(field: 1, value: activeFeatures)   // 611 veya TV & 611
         cfg.writeBytes(field: 2, value: info.toData())
 
-        // OuterMessage field 1 = remote_configure
         let outer = ProtoWriter()
-        outer.writeBytes(field: 1, value: cfg.toData())
+        outer.writeBytes(field: 1, value: cfg.toData())    // field 1 = remote_configure
 
-        sendMsg(outer.toData()); log("→ remote_configure code1=611")
+        let payload = outer.toData()
+        log("📤 sendConfigure → code1=\(activeFeatures), payload(\(payload.count)b): \(payload.prefix(8).map{String(format:"%02x",$0)}.joined(separator:" "))")
+        sendMsg(payload)
     }
 
     private func sendSetActive() {
-        // OuterMessage field 3 = remote_set_active { active: setActiveCode }
+        // RemoteMessage.remote_set_active (field 2 → outer tag 0x12):
+        //   RemoteSetActive.active = activeFeatures  (field 1)
         let inner = ProtoWriter()
-        inner.writeVarint(field: 1, value: setActiveCode)
+        inner.writeVarint(field: 1, value: activeFeatures)
 
         let outer = ProtoWriter()
-        outer.writeBytes(field: 3, value: inner.toData())
+        outer.writeBytes(field: 2, value: inner.toData())  // field 2 = remote_set_active (0x12)
 
-        sendMsg(outer.toData()); log("→ remote_set_active active=\(setActiveCode)")
+        let payload = outer.toData()
+        log("📤 sendSetActive → active=\(activeFeatures), payload(\(payload.count)b): \(payload.map{String(format:"%02x",$0)}.joined(separator:" "))")
+        sendMsg(payload)
     }
 
     private func sendPong(_ ping: Data) {
-        // Ping: OuterMessage field-8 (tag=0x42) → { field-1: val }
-        // Pong: OuterMessage field-9 (tag=0x4A) → { field-1: val }  (aynı val'i echo'la)
+        // RemoteMessage.remote_ping_response (field 9 → outer tag 0x4A):
+        //   RemotePingResponse.val1 = ping.val1  (field 1)
         let val = parsePingVal(ping)
         let inner = ProtoWriter(); inner.writeVarint(field: 1, value: val)
         let outer = ProtoWriter(); outer.writeBytes(field: 9, value: inner.toData())
         sendMsg(outer.toData())
-        log("← ping val=\(val) → pong")
+        log("🏓 ping ← val=\(val) → pong →")
     }
 
-    /// ping mesajından (msg[0]=0x42) inner val1'i varint-aware şekilde parse et
+    /// ping msg[0]=0x42: [0x42][varint innerLen][inner: 0x08 <varint val1>]
     private func parsePingVal(_ msg: Data) -> Int {
-        // msg: [0x42] [varint innerLen] [inner: 0x08 <varint val>]
         guard msg.count >= 3 else { return 0 }
         guard let (innerLen, n) = decodeVarint(msg, at: 1),
               msg.count >= 1 + n + innerLen, innerLen >= 2 else { return 0 }
@@ -240,62 +292,76 @@ final class AtvRemoteService: ObservableObject {
     }
 
     private func sendDir(_ code: Int, _ dir: Int) {
-        // OuterMessage field-10 → RemoteKeyEvent { key_code: code, direction: dir }
+        // RemoteMessage.remote_key_inject (field 10 → outer tag 0x52):
+        //   RemoteKeyInject.key_code  = code  (field 1)
+        //   RemoteKeyInject.direction = dir   (field 2)
         let inner = ProtoWriter()
         inner.writeVarint(field: 1, value: code)
         inner.writeVarint(field: 2, value: dir)
         let outer = ProtoWriter()
         outer.writeBytes(field: 10, value: inner.toData())
         sendMsg(outer.toData())
-        log("→ key \(code) dir \(dir)")
+        log("🎮 sendKey → code=\(code) dir=\(dir==1 ? "DOWN" : dir==2 ? "UP" : "SHORT")")
     }
 
     private func sendMsg(_ payload: Data) {
-        guard let conn = connection, isConnected else { return }
-        conn.send(content: encodeVarint(payload.count) + payload, completion: .idempotent)
+        guard let conn = connection, isConnected else {
+            log("⚠️ sendMsg: bağlı değil, mesaj gönderilemedi")
+            return
+        }
+        let frame = encodeVarint(payload.count) + payload
+        conn.send(content: frame, completion: .idempotent)
     }
 
-    // Bağlandıktan 3 saniye sonra hâlâ TV configure göndermemişse biz başlatıyoruz.
-    // (Bazı TV modelleri veya eski firmware'ler geç gönderebilir.)
+    /// 3 saniye içinde remote_configure gelmezse biz başlatıyoruz
     private func scheduleFallbackConfigure() {
         Task {
             try? await Task.sleep(for: .seconds(3))
             guard isConnected, !configured else { return }
             configured = true
-            log("→ fallback configure (TV configure göndermedi, biz başlatıyoruz)")
+            log("⚡ Fallback configure — TV 3s içinde configure göndermedi, biz başlatıyoruz")
             sendConfigure()
-            // Fallback'te set_active'yi de biz gönderiyoruz çünkü 0x1A gelmeyebilir
             try? await Task.sleep(for: .milliseconds(300))
+            log("⚡ Fallback set_active gönderiliyor")
             sendSetActive()
         }
     }
 
     private func startPing() {
+        // Referans: TV her 5s ping gönderiyor, biz pong'luyoruz.
+        // Referans 16s idle sonra disconnect yapıyor.
+        // Biz sadece bağlantı durumunu loglamak için basit bir task tutuyoruz.
         pingTask?.cancel()
         pingTask = Task {
-            // TV kendi ping'ini gönderir (her ~5s), biz pong'larız (handleMsg 0x42).
-            // Bu task sadece bağlantı canlılık kontrolü için tutuldu.
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(30))
+            var tick = 0
+            while !Task.isCancelled && isConnected {
+                try? await Task.sleep(for: .seconds(10))
+                tick += 1
                 guard isConnected else { break }
+                log("💓 Bağlantı canlı — \(tick * 10)s geçti")
             }
         }
     }
 
     private func onDisconnect() {
+        guard isConnected || configured else { return }   // tekrar tetiklenmeyi önle
         configured = false; isConnected = false
-        pingTask?.cancel(); log("Bağlantı kesildi")
+        pingTask?.cancel()
+        log("🔌 Bağlantı kesildi — \(reconnectTask == nil ? "reconnect başlatılıyor" : "zaten reconnect var")")
         reconnectTask?.cancel()
         reconnectTask = Task {
             try? await Task.sleep(for: .seconds(4))
             guard !Task.isCancelled, !ip.isEmpty else { return }
+            log("🔄 Yeniden bağlanmayı deniyorum → \(ip):\(port)")
             _ = await connect(ip: ip, port: port)
         }
     }
 
     private func cancelInternal() {
-        pingTask?.cancel(); connection?.cancel(); connection = nil
+        pingTask?.cancel()
+        connection?.cancel(); connection = nil
         configured = false; isConnected = false; recvBuf.removeAll()
+        log("🧹 Internal state sıfırlandı")
     }
 
     private func log(_ msg: String) {
