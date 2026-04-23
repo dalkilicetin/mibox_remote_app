@@ -3,13 +3,13 @@ workflows:
     name: MiBox Remote Swift iOS Build
     max_build_duration: 60
     instance_type: mac_mini_m2
+    working_directory: swift_app
     environment:
       groups:
-        - apple_auth # Codemagic arayüzünden oluşturulacak grup adı
+        - apple_auth
       vars:
-        XCODE_PROJECT: "swift_app/MiBoxRemote.xcodeproj"
+        XCODE_PROJECT: "MiBoxRemote.xcodeproj"
         XCODE_SCHEME: "MiBoxRemote"
-        DEVELOPMENT_TEAM: "YOUR_TEAM_ID" # Bunu Codemagic'te env var olarak ezebilirsiniz
     triggering:
       events:
         - push
@@ -22,7 +22,6 @@ workflows:
           brew install xcodegen
       - name: Generate Xcode Project
         script: |
-          cd swift_app
           xcodegen generate
       - name: Set up code signing
         script: |
@@ -41,6 +40,4 @@ workflows:
     publishing:
       email:
         recipients:
-          - your-email@example.com # Kendi e-postanızla değiştirin
-        on_failure: true
-        on_success: true
+          - your-email@example.com
