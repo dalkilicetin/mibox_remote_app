@@ -3,6 +3,29 @@ import Network
 import Security
 import CryptoKit
 
+// MARK: - ATV Pairing Protocol Notes
+//
+// Pairing sequence (port 6467, 1-byte length-prefixed frames):
+//
+//   Client → TV : PairingRequest      { service_name, client_name }         field 10 (0x52)
+//   TV → Client : PairingAck          { status: OK }
+//   Client → TV : OptionsRequest      { encoding: HEX(3), length: 6, role: INPUT(1) }  field 20 (0xA2,0x01)
+//   TV → Client : OptionsAck
+//   Client → TV : ConfigurationRequest { encoding: HEX(3), length: 6, role: INPUT(1) } field 30 (0xF2,0x01)
+//   TV → Client : ConfigurationAck    ← TV ekranda PIN gösterir
+//
+//   [kullanıcı PIN girer: 6 hex char, örn "A3F21C"]
+//
+//   secret = SHA256(clientMod ‖ clientExp ‖ serverMod ‖ serverExp ‖ pinBytes)
+//   pinBytes = last 4 hex chars decoded = 2 bytes (örn "F21C" → [0xF2,0x1C])
+//   checkByte = first 2 hex chars decoded = 1 byte (örn "A3" → 0xA3)
+//   doğrulama: secret[0] == checkByte (client-side sanity check)
+//
+//   secret mesajı (field 24, 0xC2,0x02):
+//     payload = [8,2,16,200,1,0xC2,0x02,0x22,0x0A,0x20] + secret(32 bytes)  → frame length = 42
+//
+//   TV → Client : SecretAck → eşleştirme başarılı
+
 @MainActor
 final class PairingService {
     enum Err: Error {
@@ -90,13 +113,13 @@ final class PairingService {
     func performHandshake() async throws {
         log("→ pairing_request")
         send(buildPairingRequest())
-        _ = try await readMsg(timeout: 3); log("← ack")
+        _ = try await readMsg(timeout: 3); log("← pairing_ack")
 
-        send(Data([8,2,16,200,1,162,1,8,10,4,8,3,16,6,24,1]))   // options
+        send(Data([8,2,16,200,1,162,1,8,10,4,8,3,16,6,24,1]))   // options (field 20)
         _ = try await readMsg(timeout: 5); log("← options_ack")
 
-        send(Data([8,2,16,200,1,242,1,8,10,4,8,3,16,6,16,1]))   // configuration
-        _ = try await readMsg(timeout: 3); log("← config_ack")
+        send(Data([8,2,16,200,1,242,1,8,10,4,8,3,16,6,16,1]))   // configuration (field 30)
+        _ = try await readMsg(timeout: 3); log("← config_ack — TV PIN gösteriyor")
 
         log("Handshake tamamlandı — PIN bekleniyor")
     }
@@ -107,11 +130,16 @@ final class PairingService {
         guard let serverCert else { log("server cert yok"); return false }
         guard let kp = keyPair else { return false }
 
-        let pinUp = pin.uppercased()
+        let pinUp = pin.trimmingCharacters(in: .whitespaces).uppercased()
+
+        // PIN formatı: 6 hex karakter (örn "A3F21C")
+        // checkByte  = ilk 2 char decode = 1 byte (örn 0xA3) — client sanity check
+        // pinBytes   = son 4 char decode = 2 byte (örn [0xF2, 0x1C]) — hash input
         guard pinUp.count == 6,
               let checkByte = UInt8(pinUp.prefix(2), radix: 16),
-              let pinHash = Data(hexString: String(pinUp.dropFirst(2))) else {
-            log("Geçersiz PIN formatı"); return false
+              let pinBytes  = Data(hexString: String(pinUp.dropFirst(2))) else {
+            log("Geçersiz PIN formatı — 6 hex karakter bekleniyor (örn: A3F21C)")
+            return false
         }
 
         guard let sComp = CertificateHelper.rsaComponents(from: serverCert),
@@ -119,22 +147,36 @@ final class PairingService {
             log("RSA bileşenleri çıkarılamadı"); return false
         }
 
-        var input = Data()
-        input.append(cComp.modulus); input.append(cComp.exponent)
-        input.append(sComp.modulus); input.append(sComp.exponent)
-        input.append(pinHash)
+        // secret = SHA256(clientMod ‖ clientExp ‖ serverMod ‖ serverExp ‖ pinBytes)
+        var hashInput = Data()
+        hashInput.append(cComp.modulus)
+        hashInput.append(cComp.exponent)
+        hashInput.append(sComp.modulus)
+        hashInput.append(sComp.exponent)
+        hashInput.append(pinBytes)
 
-        let secret = Array(SHA256.hash(data: input))
-        log("secret[0]=\(String(format:"%02x",secret[0])) check=\(String(format:"%02x",checkByte))")
+        let secret = Array(SHA256.hash(data: hashInput))
 
+        log("secret[0]=\(String(format:"%02x", secret[0])) checkByte=\(String(format:"%02x", checkByte))")
+
+        // client-side doğrulama: hash'in ilk byte'ı PIN'in ilk byte'ıyla eşleşmeli
         guard secret[0] == checkByte else {
-            log("HATA: PIN eşleşmiyor! secret[0]=\(String(format:"%02x",secret[0])) check=\(String(format:"%02x",checkByte))");
+            log("PIN doğrulanamadı — secret[0] ≠ checkByte. PIN yanlış girilmiş olabilir.")
             return false
         }
 
-        var msg = Data([8,2,16,200,1,98,34,10,32])
+        // SecretCredentials mesajı:
+        // [8,2,16,200,1] = header (version=2, status=OK)
+        // [0xC2,0x02]    = field 24 wire 2 (secret_credentials outer) — NOT: 0x62(98)=field12 YANLIŞ
+        // [0x22]         = field 4 wire 2 (credentials inner)
+        // [0x0A]         = field 1 wire 2 (secret bytes tag)
+        // [0x20]         = 32 (secret length)
+        // + 32 bytes secret
+        var msg = Data([0x08, 0x02, 0x10, 0xC8, 0x01, 0xC2, 0x02, 0x22, 0x0A, 0x20])
         msg.append(contentsOf: secret)
         send(msg)
+        log("→ secret gönderildi (\(msg.count) bytes)")
+
         _ = try await readMsg(timeout: 3)
         log("← secret_ack — EŞLEŞTİRME BAŞARILI!")
         return true
@@ -213,10 +255,13 @@ final class PairingService {
     }
 
     private func buildPairingRequest() -> Data {
+        // PairingRequest: { service_name: "ATV Remote", client_name: "com.google.android.tv.remote" }
+        // field 10 (0x52): service name
+        // field 18 (0x12 inside): client name
         let svc = Data("ATV Remote".utf8)
         let cli = Data("com.google.android.tv.remote".utf8)
-        let inner = Data([10, UInt8(svc.count)]) + svc + Data([18, UInt8(cli.count)]) + cli
-        return Data([8,2,16,200,1,82,UInt8(inner.count)]) + inner
+        let inner = Data([0x0A, UInt8(svc.count)]) + svc + Data([0x12, UInt8(cli.count)]) + cli
+        return Data([0x08, 0x02, 0x10, 0xC8, 0x01, 0x52, UInt8(inner.count)]) + inner
     }
 }
 
