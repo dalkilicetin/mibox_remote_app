@@ -33,7 +33,7 @@ enum CertificateHelper {
 
     // MARK: - Self-signed X.509
 
-    static func createSelfSignedCert(keyPair: KeyPair, cn: String = "com.mibox.remote") throws -> SecCertificate {
+    static func createSelfSignedCert(keyPair: KeyPair, cn: String = "com.google.android.tv.remote") throws -> SecCertificate {
         let now = Date()
         let name = DEREncoder.sequence(
             DEREncoder.setOf(

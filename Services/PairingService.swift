@@ -150,6 +150,8 @@ final class PairingService {
         }
         KeychainHelper.deleteCertAndKey(ip: ip)
         KeychainHelper.storeCertAndKey(ip: ip, certDER: certDER, keyDER: keyDER)
+        let checkCert = KeychainHelper.hasCert(ip: ip)
+        log("KAYIT KONTROL: hasCert=\(checkCert)")
         let verify = KeychainHelper.loadIdentity(label: KeychainHelper.identityLabel(ip: ip))
         log(verify != nil ? "✓ Identity kaydedildi ve doğrulandı (\(ip))" : "HATA: Identity doğrulanamadı (\(ip))")
     }

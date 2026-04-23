@@ -6,7 +6,8 @@
       "Bash(flutter doctor:*)",
       "Bash(./gradlew assembleDebug)",
       "Bash(dir:*)",
-      "Bash(findstr \"setup_screen.dart\")"
+      "Bash(findstr \"setup_screen.dart\")",
+      "WebSearch"
     ]
   }
 }
