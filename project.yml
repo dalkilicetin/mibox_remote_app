@@ -3,7 +3,6 @@ options:
   bundleIdPrefix: com.mibox
   deploymentTarget:
     iOS: "16.0"
-  xcodeVersion: "15.0"
   createIntermediateGroups: true
 
 settings:
@@ -22,37 +21,14 @@ targets:
     type: application
     platform: iOS
     info:
-      properties:
-        CFBundleName: MiBoxRemote
-        CFBundleDisplayName: MiBox Remote
-        CFBundleVersion: "1"
-        CFBundleShortVersionString: "1.0.0"
-        UILaunchScreen:
-          UIColorName: ""
-        UIApplicationSceneManifest:
-          UIApplicationSupportsMultipleScenes: false
-          UISceneConfigurations: {}
-        NSLocalNetworkUsageDescription: "Ağdaki Mi Box cihazlarını keşfetmek için yerel ağ erişimi gereklidir."
-        NSBonjourServices:
-          - "_androidtvremote._tcp"
-          - "_androidtvremote2._tcp"
-        NSMotionUsageDescription: "Air Mouse özelliği için hareket sensörlerine erişim gereklidir."
-        UIRequiredDeviceCapabilities:
-          - armv7
-        UISupportedInterfaceOrientations:
-          - UIInterfaceOrientationPortrait
-        UISupportedInterfaceOrientations~ipad:
-          - UIInterfaceOrientationPortrait
-          - UIInterfaceOrientationPortraitUpsideDown
-          - UIInterfaceOrientationLandscapeLeft
-          - UIInterfaceOrientationLandscapeRight
+      path: Info.plist
     sources:
-      - App
-      - Models
-      - Services
-      - Utilities
-      - Views
-      - Assets.xcassets
+      - path: App
+      - path: Models
+      - path: Services
+      - path: Utilities
+      - path: Views
+      - path: Assets.xcassets
     settings:
       base:
         PRODUCT_NAME: MiBoxRemote
