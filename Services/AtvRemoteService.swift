@@ -134,7 +134,7 @@ final class AtvRemoteService: ObservableObject {
         let info = ProtoWriter()
         info.writeVarint(field: 3, value: 1)
         info.writeString(field: 4, value: "1")
-        info.writeString(field: 5, value: "com.mibox.remote")
+        info.writeString(field: 5, value: "com.google.android.tv.remote")
         info.writeString(field: 6, value: "1.0.0")
         let cfg = ProtoWriter()
         cfg.writeVarint(field: 1, value: 615)
