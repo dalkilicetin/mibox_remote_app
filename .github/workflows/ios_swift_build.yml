@@ -1,0 +1,129 @@
+name: Build Swift iOS IPA
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── DEBUG: Ortam bilgisi ────────────────────────────────────────────
+      - name: Debug | Sistem bilgisi
+        run: |
+          echo "=== macOS ==="
+          sw_vers
+          echo "=== Xcode listesi ==="
+          ls /Applications | grep Xcode
+          echo "=== Disk ==="
+          df -h /
+          echo "=== Repo kök içeriği ==="
+          ls -la
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app
+
+      - name: Debug | Xcode versiyonu
+        run: |
+          xcode-select -p
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Debug | project.yml içeriği
+        run: |
+          echo "=== project.yml ==="
+          cat project.yml
+          echo ""
+          echo "=== Kaynak klasörler ==="
+          for d in App Models Services Utilities Views Assets.xcassets; do
+            if [ -d "$d" ]; then
+              echo "✓ $d ($(find "$d" -type f | wc -l | tr -d ' ') dosya)"
+            else
+              echo "✗ $d — BULUNAMADI"
+            fi
+          done
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Debug | Üretilen proje yapısı
+        run: |
+          echo "=== .xcodeproj içeriği ==="
+          ls -la MiBoxRemote.xcodeproj/
+          echo "=== Scheme listesi ==="
+          xcodebuild -project MiBoxRemote.xcodeproj -list 2>&1 || true
+
+      - name: Build (no codesign)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project MiBoxRemote.xcodeproj \
+            -scheme MiBoxRemote \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination generic/platform=iOS \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            clean build \
+            2>&1 | tee swift_build.log
+          BUILD_EXIT=${PIPESTATUS[0]}
+          if [ $BUILD_EXIT -ne 0 ]; then
+            echo ""
+            echo "=== BUILD HATASI — SON 150 SATIR ==="
+            tail -150 swift_build.log
+            exit 1
+          fi
+
+      - name: Debug | Build çıktısı
+        run: |
+          echo "=== Build klasörü ==="
+          find build -name "*.app" -type d 2>/dev/null || echo "build/ klasörü bulunamadı"
+          find build -name "*.o" | wc -l | xargs echo "Derlenen .o dosyası:"
+          du -sh build/ 2>/dev/null || true
+
+      - name: IPA oluştur
+        run: |
+          APP=$(find build -name "MiBoxRemote.app" -type d | head -1)
+          if [ -z "$APP" ]; then
+            echo "HATA: MiBoxRemote.app bulunamadı"
+            echo "=== Mevcut .app dosyaları ==="
+            find build -name "*.app" -type d 2>/dev/null || true
+            exit 1
+          fi
+          echo "Bulunan .app: $APP"
+          mkdir -p Payload
+          cp -r "$APP" Payload/
+          zip -r MiBoxRemote.ipa Payload/
+          ls -lh MiBoxRemote.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiBoxRemote-Swift-ipa
+          path: MiBoxRemote.ipa
+          retention-days: 7
+
+      # ── Hata durumunda log ve proje dosyalarını yükle ──────────────────
+      - name: Upload build log (hata)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swift-build-log
+          path: swift_build.log
+          retention-days: 3
+
+      - name: Upload xcodeproj (hata)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-xcodeproj
+          path: MiBoxRemote.xcodeproj/
+          retention-days: 3
