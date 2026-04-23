@@ -1,3 +1,5 @@
+bu commit calisti
+
  Mi Box Remote — Swift iOS Rewrite Requirements
 
   1. Uygulama Genel Yapısı
