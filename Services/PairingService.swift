@@ -127,7 +127,10 @@ final class PairingService {
         let secret = Array(SHA256.hash(data: input))
         log("secret[0]=\(String(format:"%02x",secret[0])) check=\(String(format:"%02x",checkByte))")
 
-        guard secret[0] == checkByte else { log("PIN mismatch"); return false }
+        guard secret[0] == checkByte else {
+            log("HATA: PIN eşleşmiyor! secret[0]=\(String(format:"%02x",secret[0])) check=\(String(format:"%02x",checkByte))");
+            return false
+        }
 
         var msg = Data([8,2,16,200,1,98,34,10,32])
         msg.append(contentsOf: secret)
