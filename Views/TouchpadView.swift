@@ -123,7 +123,7 @@ struct TouchpadView: View {
         .padding(.horizontal, geo.size.width * 0.03)
     }
 
-    private func keyboardButton: some View {
+    private func keyboardButton(geo: GeometryProxy) -> some View {
         Button(action: { kbdVisible = true }) {
             Label("Klavye", systemImage: "keyboard").foregroundColor(.greenOk)
                 .frame(maxWidth: .infinity).padding(.vertical, geo.size.height * 0.015)
@@ -132,7 +132,7 @@ struct TouchpadView: View {
         .padding(.horizontal, geo.size.width * 0.03)
     }
 
-    private func actionButtons: some View {
+    private func actionButtons(geo: GeometryProxy) -> some View {
         VStack(spacing: geo.size.height * 0.01) {
             HStack(spacing: geo.size.width * 0.02) {
                 tpBtn(icon: "arrow.backward", label: "Geri", geo: geo)  { sendKey(AtvKey.back) }

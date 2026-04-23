@@ -191,7 +191,7 @@ final class MiBoxService: ObservableObject {
         connection?.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, done, err in
             guard let self else { return }
             if let data { Task { @MainActor in self.handleData(data) } }
-            if err == nil && !done { self.receive() }
+            if err == nil && !done { Task { @MainActor in self.receive() } }
             else { Task { @MainActor in self.isConnected = false } }
         }
     }

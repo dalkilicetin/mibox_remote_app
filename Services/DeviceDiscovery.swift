@@ -26,7 +26,7 @@ final class DeviceDiscovery: ObservableObject {
         isScanning = true; devices = []; status = "Adım 1: mDNS taranıyor..."
 
         // UDP APK discovery (parallel, short)
-        let udpResults = await MiBoxService.discoverDevices(timeout: .seconds(2))
+        let udpResults = await MiBoxService.discoverDevices(timeout: .seconds(3))
         let apkIPs = Set(udpResults.compactMap { $0["ip"] as? String })
         var udpPorts: [String: (pairing: Int, remote: Int)] = [:]
         for r in udpResults {

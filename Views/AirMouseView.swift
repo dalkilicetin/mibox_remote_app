@@ -83,7 +83,7 @@ struct AirMouseView: View {
         .padding(.horizontal, geo.size.width * 0.03)
     }
 
-    private func mainArea: some View {
+    private func mainArea(geo: GeometryProxy) -> some View {
         HStack(spacing: 8) {
             // TIKLA area
             tapArea
@@ -180,7 +180,7 @@ struct AirMouseView: View {
         .padding(.horizontal, geo.size.width * 0.03)
     }
 
-    private func sensitivitySlider: some View {
+    private func sensitivitySlider(geo: GeometryProxy) -> some View {
         VStack(spacing: 4) {
             HStack {
                 Text("Hassasiyet").font(.system(size: 12)).foregroundColor(.gray)

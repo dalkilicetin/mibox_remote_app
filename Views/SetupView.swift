@@ -174,12 +174,20 @@ struct SetupView: View {
     private func launchRemote(_ device: DiscoveredDevice) {
         KeychainHelper.saveStr(device.ip, key: "mibox_ip")
         Task {
+            // hasApk flag'ini yok say — discovery timing'e bağlı, güvenilmez.
+            // Her zaman TCP 9876'yı dene; APK açıksa bağlanır, değilse nil döner.
             var svc: MiBoxService? = nil
-            if device.hasApk {
-                let s = MiBoxService()
-                if await s.connect(to: device.ip) { svc = s }
+            let s = MiBoxService()
+            if await s.connect(to: device.ip) {
+                svc = s
+                // device'ı hasApk=true ile güncelle (UI için)
+                var updated = device; updated.hasApk = true
+                destination = .remote(updated, svc)
+            } else {
+                // APK yok veya bağlanamadı — normal remote ile devam et
+                var updated = device; updated.hasApk = false
+                destination = .remote(updated, nil)
             }
-            destination = .remote(device, svc)
         }
     }
 
