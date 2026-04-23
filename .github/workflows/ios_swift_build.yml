@@ -82,7 +82,6 @@ jobs:
             -project MiBoxRemote.xcodeproj \
             -scheme MiBoxRemote \
             -configuration Release \
-            -sdk iphoneos \
             -destination generic/platform=iOS \
             -derivedDataPath ./build \
             CODE_SIGNING_ALLOWED=NO \
