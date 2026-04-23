@@ -162,6 +162,7 @@ final class PairingVM: ObservableObject {
             if ok {
                 svc.saveIdentity(ip: deviceIP)
                 KeychainHelper.saveInt(6466, key: KeychainHelper.remotePortKey(ip: deviceIP))
+                svc.close()
                 status = "Eşleştirme başarılı!"
                 pairingSuccess = true
             } else {

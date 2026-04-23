@@ -5,7 +5,11 @@
       "Bash(mv android *)",
       "Bash(mv ios *)",
       "Bash(mv linux *)",
-      "Bash(mv macos *)"
+      "Bash(mv macos *)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

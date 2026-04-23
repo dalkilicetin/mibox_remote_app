@@ -157,7 +157,7 @@ struct SetupView: View {
     }
 
     private func repairDevice(_ device: DiscoveredDevice) {
-        KeychainHelper.deleteIdentity(label: KeychainHelper.identityLabel(ip: device.ip))
+        KeychainHelper.deleteCertAndKey(ip: device.ip)
         destination = .pairing(device)
     }
 

@@ -17,6 +17,7 @@ final class PairingService {
 
     private var keyPair: CertificateHelper.KeyPair?
     private var certificate: SecCertificate?
+    private var tempIdentityLabel: String?
     var onLog: ((String) -> Void)?
     private func log(_ s: String) { print("[PAIR] \(s)"); onLog?(s) }
 
@@ -35,13 +36,11 @@ final class PairingService {
     func connect(ip: String, port: Int) async throws {
         guard let cert = certificate, let kp = keyPair else { throw Err.noCert }
 
-        // Temporarily store identity so NWConnection can use it
         let label = "mibox_pairing_temp_\(ip)"
-        KeychainHelper.deleteIdentity(label: label)
-        KeychainHelper.storeIdentity(cert: cert, privateKey: kp.privateKey, label: label)
-
-        guard let identity = KeychainHelper.loadIdentity(label: label) else {
-            KeychainHelper.deleteIdentity(label: label)
+        tempIdentityLabel = label
+        guard let identity = KeychainHelper.buildTempIdentity(cert: cert, privateKey: kp.privateKey, label: label) else {
+            KeychainHelper.deleteTempIdentity(label: label)
+            tempIdentityLabel = nil
             throw Err.connectionFailed("SecIdentity oluşturulamadı")
         }
 
@@ -68,7 +67,7 @@ final class PairingService {
                     Task { @MainActor in self?.startReceive(); cont.resume() }
                 case .failed(let e):
                     guard !done else { return }; done = true
-                    KeychainHelper.deleteIdentity(label: label)
+                    KeychainHelper.deleteTempIdentity(label: label)
                     cont.resume(throwing: Err.connectionFailed(e.localizedDescription))
                 case .cancelled:
                     guard !done else { return }; done = true
@@ -80,7 +79,7 @@ final class PairingService {
             Task {
                 try? await Task.sleep(for: .seconds(5))
                 guard !done else { return }; done = true; conn.cancel()
-                KeychainHelper.deleteIdentity(label: label)
+                KeychainHelper.deleteTempIdentity(label: label)
                 cont.resume(throwing: Err.timeout)
             }
         }
@@ -142,21 +141,23 @@ final class PairingService {
 
     func saveIdentity(ip: String) {
         guard let cert = certificate, let kp = keyPair else {
-            log("HATA: saveIdentity — cert veya keyPair nil")
-            return
+            log("HATA: saveIdentity — cert veya keyPair nil"); return
         }
-        let label = KeychainHelper.identityLabel(ip: ip)
-        KeychainHelper.deleteIdentity(label: label)
-        let ok = KeychainHelper.storeIdentity(cert: cert, privateKey: kp.privateKey, label: label)
-        if ok {
-            let verify = KeychainHelper.loadIdentity(label: label)
-            log(verify != nil ? "✓ Keychain kaydedildi ve doğrulandı (\(ip))" : "HATA: Kaydedildi ama yüklenemedi (\(ip))")
-        } else {
-            log("HATA: Keychain'e kayıt başarısız (\(ip))")
+        let certDER = SecCertificateCopyData(cert) as Data
+        var cfErr: Unmanaged<CFError>?
+        guard let keyDER = SecKeyCopyExternalRepresentation(kp.privateKey, &cfErr) as Data? else {
+            log("HATA: Private key export başarısız: \(cfErr?.takeRetainedValue() as Any)"); return
         }
+        KeychainHelper.deleteCertAndKey(ip: ip)
+        KeychainHelper.storeCertAndKey(ip: ip, certDER: certDER, keyDER: keyDER)
+        let verify = KeychainHelper.loadIdentity(label: KeychainHelper.identityLabel(ip: ip))
+        log(verify != nil ? "✓ Identity kaydedildi ve doğrulandı (\(ip))" : "HATA: Identity doğrulanamadı (\(ip))")
     }
 
-    func close() { connection?.cancel(); connection = nil }
+    func close() {
+        connection?.cancel(); connection = nil
+        if let label = tempIdentityLabel { KeychainHelper.deleteTempIdentity(label: label); tempIdentityLabel = nil }
+    }
 
     // MARK: - Frame codec (1-byte length prefix)
 
