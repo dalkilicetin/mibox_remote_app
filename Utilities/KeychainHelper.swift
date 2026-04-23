@@ -76,6 +76,10 @@ enum KeychainHelper {
             deleteIdentityItems(label: tempLabel)
             return nil
         }
+        // SecIdentity artık bellekte tutulduğundan Keychain'deki temp items'ı temizle.
+        // Temizlenmezse her loadIdentity çağrısında birikir; iOS hangi cert'i kullanacağını
+        // karıştırabilir ve TLS client auth başarısız olur.
+        deleteIdentityItems(label: tempLabel)
         return (idRef as! SecIdentity)
     }
 

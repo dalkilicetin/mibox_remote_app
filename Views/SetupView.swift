@@ -152,7 +152,11 @@ struct SetupView: View {
     // MARK: - Actions
 
     private func connectTo(_ device: DiscoveredDevice) {
-        destination = .pairing(device)
+        if device.hasCert {
+            launchRemote(device)
+        } else {
+            destination = .pairing(device)
+        }
     }
 
     private func repairDevice(_ device: DiscoveredDevice) {
