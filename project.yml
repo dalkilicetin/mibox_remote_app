@@ -22,7 +22,6 @@ targets:
     type: application
     platform: iOS
     info:
-      path: MiBoxRemote/Info.plist
       properties:
         CFBundleName: MiBoxRemote
         CFBundleDisplayName: MiBox Remote
@@ -48,13 +47,13 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
     sources:
-      - path: MiBoxRemote
-        excludes:
-          - "**/*.md"
-          - "**/Info.plist"
+      - path: App
+      - path: Models
+      - path: Services
+      - path: Utilities
+      - path: Views
     resources:
-      - MiBoxRemote/Assets.xcassets
+      - path: Assets.xcassets
     settings:
       base:
         PRODUCT_NAME: MiBoxRemote
-        INFOPLIST_FILE: MiBoxRemote/Info.plist
