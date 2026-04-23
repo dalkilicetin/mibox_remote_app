@@ -16,14 +16,16 @@ struct RemoteView: View {
     private var hasApk: Bool { apkService != nil }
 
     var body: some View {
-        ZStack { Color.appBg.ignoresSafeArea()
-            VStack(spacing: 0) {
-                statusBar
-                if !atvConnected {
-                    reconnectBanner
+        GeometryReader { geo in
+            ZStack { Color.appBg.ignoresSafeArea()
+                VStack(spacing: 0) {
+                    statusBar(geo: geo)
+                    if !atvConnected {
+                        reconnectBanner(geo: geo)
+                    }
+                    tabBar(geo: geo)
+                    tabContent(geo: geo)
                 }
-                tabBar
-                tabContent
             }
         }
         .navigationBarHidden(true)
@@ -38,61 +40,60 @@ struct RemoteView: View {
 
     // MARK: - Status bar
 
-    private var statusBar: some View {
-        HStack(spacing: 12) {
+    private func statusBar(geo: GeometryProxy) -> some View {
+        HStack(spacing: 10) {
             if hasApk {
                 Circle().fill(apkConnected ? Color.greenOk : .red).frame(width: 8, height: 8)
                 Text(apkConnected ? "Cursor" : "Cursor yok")
-                    .font(.system(size: 11)).foregroundColor(apkConnected ? .greenOk : .red)
+                    .font(.system(size: geo.size.width * 0.028))
+                    .foregroundColor(apkConnected ? .greenOk : .red)
             }
-            Circle()
-                .fill(atvConnected ? Color.greenOk : .red)
-                .frame(width: 8, height: 8)
+            Circle().fill(atvConnected ? Color.greenOk : .red).frame(width: 8, height: 8)
             Text(atvConnected ? "TV Remote" : "Bağlantı yok")
-                .font(.system(size: 11)).foregroundColor(atvConnected ? .greenOk : .red)
+                .font(.system(size: geo.size.width * 0.028))
+                .foregroundColor(atvConnected ? .greenOk : .red)
             Spacer()
-            Text(device.ip).font(.system(size: 11)).foregroundColor(.gray)
+            Text(device.ip).font(.system(size: geo.size.width * 0.026)).foregroundColor(.gray)
             Button(action: { dismiss() }) {
-                Image(systemName: "xmark").foregroundColor(.gray).font(.system(size: 14))
+                Image(systemName: "xmark").foregroundColor(.gray).font(.system(size: geo.size.width * 0.038))
             }
         }
-        .padding(.horizontal, 16).padding(.vertical, 8)
+        .padding(.horizontal, geo.size.width * 0.04)
+        .padding(.vertical, geo.size.height * 0.012)
         .background(Color.cardBg)
     }
 
-    // MARK: - Reconnect banner (sadece bağlantı yokken görünür)
+    // MARK: - Reconnect banner
 
-    private var reconnectBanner: some View {
+    private func reconnectBanner(geo: GeometryProxy) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "exclamationmark.triangle")
                 .foregroundColor(Color(hex: "fbbf24"))
-                .font(.system(size: 13))
+                .font(.system(size: geo.size.width * 0.033))
             Text("TV'ye bağlanılamıyor")
-                .font(.system(size: 13))
+                .font(.system(size: geo.size.width * 0.033))
                 .foregroundColor(.white)
             Spacer()
             Button(action: reconnect) {
                 HStack(spacing: 6) {
                     if isReconnecting {
-                        ProgressView()
-                            .progressViewStyle(.circular)
-                            .scaleEffect(0.7)
-                            .tint(.white)
+                        ProgressView().progressViewStyle(.circular).scaleEffect(0.7).tint(.white)
                     } else {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 12))
+                        Image(systemName: "arrow.clockwise").font(.system(size: geo.size.width * 0.03))
                     }
                     Text(isReconnecting ? "Bağlanıyor..." : "Yeniden Bağlan")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: geo.size.width * 0.03, weight: .semibold))
                 }
                 .foregroundColor(.white)
-                .padding(.horizontal, 12).padding(.vertical, 7)
+                .padding(.horizontal, geo.size.width * 0.03)
+                .padding(.vertical, geo.size.height * 0.01)
                 .background(Color.redAccent)
                 .cornerRadius(8)
             }
             .disabled(isReconnecting)
         }
-        .padding(.horizontal, 16).padding(.vertical, 10)
+        .padding(.horizontal, geo.size.width * 0.04)
+        .padding(.vertical, geo.size.height * 0.012)
         .background(Color(hex: "1a1a2e"))
         .overlay(Rectangle().frame(height: 1).foregroundColor(Color(hex: "fbbf24").opacity(0.4)), alignment: .bottom)
     }
@@ -104,37 +105,45 @@ struct RemoteView: View {
         return ["Kumanda", "Debug"]
     }
 
-    private var tabBar: some View {
+    private func tabBar(geo: GeometryProxy) -> some View {
         HStack(spacing: 0) {
             ForEach(Array(tabs.enumerated()), id: \.offset) { idx, name in
                 Button(action: { selectedTab = idx }) {
                     VStack(spacing: 4) {
-                        Text(name).font(.system(size: 13))
+                        Text(name)
+                            .font(.system(size: geo.size.width * 0.033))
                             .foregroundColor(selectedTab == idx ? .redAccent : .gray)
-                        Rectangle().fill(selectedTab == idx ? Color.redAccent : .clear).frame(height: 2)
+                        Rectangle()
+                            .fill(selectedTab == idx ? Color.redAccent : .clear)
+                            .frame(height: 2)
                     }
                 }
                 .frame(maxWidth: .infinity)
             }
         }
-        .padding(.top, 4)
+        .padding(.top, geo.size.height * 0.008)
         .background(Color.cardBg)
     }
 
-    // MARK: - Tab content
+    // MARK: - Tab content — tam kalan alanı kaplar
 
     @ViewBuilder
-    private var tabContent: some View {
+    private func tabContent(geo: GeometryProxy) -> some View {
         if hasApk, let svc = apkService {
             switch selectedTab {
             case 0: AirMouseView(apk: svc, atv: atv)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
             case 1: TouchpadView(apk: svc, atv: atv)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
             default: DebugView(logs: $logs, onClear: { logs.removeAll() }, onReconnect: reconnect)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         } else {
             switch selectedTab {
             case 0: DpadView(atv: atv)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
             default: DebugView(logs: $logs, onClear: { logs.removeAll() }, onReconnect: reconnect)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
     }
