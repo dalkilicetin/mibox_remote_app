@@ -27,6 +27,9 @@ struct RemoteView: View {
         .onReceive(apkService?.objectWillChange.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { _ in
             apkConnected = apkService?.isConnected ?? false
         }
+        .onReceive(atv.objectWillChange) {
+            atvConnected = atv.isConnected
+        }
     }
 
     // MARK: - Status bar
@@ -110,9 +113,18 @@ struct RemoteView: View {
             return
         }
         atv.setIdentity(identity)
-        let ok = await atv.connect(ip: device.ip, port: device.remotePort)
+
+        // Pairing sonrası TV remote portu açmak için kısa süre bekleyebilir.
+        // İlk deneme başarısız olursa 2 kez daha dene.
+        var ok = false
+        for attempt in 1...3 {
+            ok = await atv.connect(ip: device.ip, port: device.remotePort)
+            if ok { break }
+            addLog("Bağlantı denemesi \(attempt) başarısız, bekleniyor...")
+            if attempt < 3 { try? await Task.sleep(for: .seconds(2)) }
+        }
         atvConnected = ok
-        addLog(ok ? "ATV bağlandı ✓" : "ATV bağlantısı başarısız!")
+        addLog(ok ? "ATV bağlandı ✓" : "ATV bağlantısı başarısız! (3 deneme)")
     }
 
     private func addLog(_ msg: String) {
