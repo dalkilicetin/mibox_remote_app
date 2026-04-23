@@ -33,8 +33,15 @@ jobs:
           xcode-select -p
           xcodebuild -version
 
+      # ── Cache: XcodeGen ────────────────────────────────────────────────
+      - name: Cache XcodeGen
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/xcodegen
+          key: xcodegen-${{ runner.os }}
+
       - name: Install XcodeGen
-        run: brew install xcodegen
+        run: command -v xcodegen || brew install xcodegen
 
       - name: Debug | project.yml içeriği
         run: |
@@ -60,6 +67,14 @@ jobs:
           echo "=== Scheme listesi ==="
           xcodebuild -project MiBoxRemote.xcodeproj -list 2>&1 || true
 
+      # ── Cache: DerivedData (incremental build) ─────────────────────────
+      - name: Cache DerivedData
+        uses: actions/cache@v4
+        with:
+          path: ./build
+          key: deriveddata-${{ hashFiles('**/*.swift', 'project.yml') }}
+          restore-keys: deriveddata-
+
       - name: Build (no codesign)
         run: |
           set -o pipefail
@@ -73,7 +88,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             ONLY_ACTIVE_ARCH=NO \
-            clean build \
+            build \
             2>&1 | tee swift_build.log
           BUILD_EXIT=${PIPESTATUS[0]}
           if [ $BUILD_EXIT -ne 0 ]; then
