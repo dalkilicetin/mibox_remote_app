@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import Network
 
 struct RemoteView: View {
     let device: DiscoveredDevice
@@ -11,25 +12,20 @@ struct RemoteView: View {
     @State private var logs: [String] = []
     @State private var selectedTab = 0
     @State private var isReconnecting = false
+    @State private var apkRetried = false
     @Environment(\.dismiss) private var dismiss
 
     private var hasApk: Bool { apkService != nil }
 
     var body: some View {
-        GeometryReader { geo in
-            VStack(spacing: 0) {
-                statusBar(geo: geo)
-                if !atvConnected {
-                    reconnectBanner(geo: geo)
-                }
-                tabBar(geo: geo)
-                tabContent(geo: geo)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .frame(maxWidth: geo.size.width, maxHeight: geo.size.height)
-            .background(Color.appBg)
+        VStack(spacing: 0) {
+            statusBar
+            if !atvConnected { reconnectBanner }
+            tabBar
+            // tabContent kalan tüm alanı kaplar
+            tabContent
         }
-        .ignoresSafeArea(edges: .bottom)
+        .background(Color.appBg.ignoresSafeArea())
         .navigationBarHidden(true)
         .task { await initAtv() }
         .task { await retryApkIfNeeded() }
@@ -43,38 +39,38 @@ struct RemoteView: View {
 
     // MARK: - Status bar
 
-    private func statusBar(geo: GeometryProxy) -> some View {
+    private var statusBar: some View {
         HStack(spacing: 10) {
             if hasApk {
                 Circle().fill(apkConnected ? Color.greenOk : .red).frame(width: 8, height: 8)
                 Text(apkConnected ? "Cursor" : "Cursor yok")
-                    .font(.system(size: geo.size.width * 0.028))
+                    .font(.system(size: 11))
                     .foregroundColor(apkConnected ? .greenOk : .red)
             }
             Circle().fill(atvConnected ? Color.greenOk : .red).frame(width: 8, height: 8)
             Text(atvConnected ? "TV Remote" : "Bağlantı yok")
-                .font(.system(size: geo.size.width * 0.028))
+                .font(.system(size: 11))
                 .foregroundColor(atvConnected ? .greenOk : .red)
             Spacer()
-            Text(device.ip).font(.system(size: geo.size.width * 0.026)).foregroundColor(.gray)
+            Text(device.ip).font(.system(size: 11)).foregroundColor(.gray)
             Button(action: { dismiss() }) {
-                Image(systemName: "xmark").foregroundColor(.gray).font(.system(size: geo.size.width * 0.038))
+                Image(systemName: "xmark").foregroundColor(.gray).font(.system(size: 14))
             }
         }
-        .padding(.horizontal, geo.size.width * 0.04)
-        .padding(.vertical, geo.size.height * 0.012)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
         .background(Color.cardBg)
     }
 
     // MARK: - Reconnect banner
 
-    private func reconnectBanner(geo: GeometryProxy) -> some View {
+    private var reconnectBanner: some View {
         HStack(spacing: 10) {
             Image(systemName: "exclamationmark.triangle")
                 .foregroundColor(Color(hex: "fbbf24"))
-                .font(.system(size: geo.size.width * 0.033))
+                .font(.system(size: 13))
             Text("TV'ye bağlanılamıyor")
-                .font(.system(size: geo.size.width * 0.033))
+                .font(.system(size: 13))
                 .foregroundColor(.white)
             Spacer()
             Button(action: reconnect) {
@@ -82,21 +78,19 @@ struct RemoteView: View {
                     if isReconnecting {
                         ProgressView().progressViewStyle(.circular).scaleEffect(0.7).tint(.white)
                     } else {
-                        Image(systemName: "arrow.clockwise").font(.system(size: geo.size.width * 0.03))
+                        Image(systemName: "arrow.clockwise").font(.system(size: 12))
                     }
                     Text(isReconnecting ? "Bağlanıyor..." : "Yeniden Bağlan")
-                        .font(.system(size: geo.size.width * 0.03, weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold))
                 }
                 .foregroundColor(.white)
-                .padding(.horizontal, geo.size.width * 0.03)
-                .padding(.vertical, geo.size.height * 0.01)
+                .padding(.horizontal, 12).padding(.vertical, 7)
                 .background(Color.redAccent)
                 .cornerRadius(8)
             }
             .disabled(isReconnecting)
         }
-        .padding(.horizontal, geo.size.width * 0.04)
-        .padding(.vertical, geo.size.height * 0.012)
+        .padding(.horizontal, 16).padding(.vertical, 10)
         .background(Color(hex: "1a1a2e"))
         .overlay(Rectangle().frame(height: 1).foregroundColor(Color(hex: "fbbf24").opacity(0.4)), alignment: .bottom)
     }
@@ -104,17 +98,15 @@ struct RemoteView: View {
     // MARK: - Tab bar
 
     private var tabs: [String] {
-        if hasApk { return ["Air Mouse", "Touchpad", "Debug"] }
-        return ["Kumanda", "Debug"]
+        hasApk ? ["Air Mouse", "Touchpad", "Debug"] : ["Kumanda", "Debug"]
     }
 
-    private func tabBar(geo: GeometryProxy) -> some View {
+    private var tabBar: some View {
         HStack(spacing: 0) {
             ForEach(Array(tabs.enumerated()), id: \.offset) { idx, name in
                 Button(action: { selectedTab = idx }) {
                     VStack(spacing: 4) {
-                        Text(name)
-                            .font(.system(size: geo.size.width * 0.033))
+                        Text(name).font(.system(size: 13))
                             .foregroundColor(selectedTab == idx ? .redAccent : .gray)
                         Rectangle()
                             .fill(selectedTab == idx ? Color.redAccent : .clear)
@@ -124,44 +116,34 @@ struct RemoteView: View {
                 .frame(maxWidth: .infinity)
             }
         }
-        .padding(.top, geo.size.height * 0.008)
+        .padding(.top, 4)
         .background(Color.cardBg)
     }
 
-    // MARK: - Tab content — tam kalan alanı kaplar
+    // MARK: - Tab content
 
     @ViewBuilder
-    private func tabContent(geo: GeometryProxy) -> some View {
+    private var tabContent: some View {
         if hasApk, let svc = apkService {
             switch selectedTab {
             case 0: AirMouseView(apk: svc, atv: atv)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
             case 1: TouchpadView(apk: svc, atv: atv)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
             default: DebugView(logs: $logs, onClear: { logs.removeAll() }, onReconnect: reconnect)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         } else {
             switch selectedTab {
             case 0: DpadView(atv: atv)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
             default: DebugView(logs: $logs, onClear: { logs.removeAll() }, onReconnect: reconnect)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
     }
 
     // MARK: - APK background retry
 
-    /// apkService nil geldiyse (discovery timing sorunu) arka planda APK'ya bağlanmayı dener
-    @State private var apkRetried = false
-
     private func retryApkIfNeeded() async {
         guard apkService == nil, !apkRetried else { return }
         apkRetried = true
-        // Kısa bekle — ATV bağlantısı kurulsun
         try? await Task.sleep(for: .seconds(2))
-        // APK portu açık mı?
         let open = await withCheckedContinuation { cont in
             let conn = NWConnection(host: .init(device.ip), port: 9876, using: .tcp)
             var done = false
@@ -178,12 +160,7 @@ struct RemoteView: View {
                 guard !done else { return }; done = true; conn.cancel(); cont.resume(returning: false)
             }
         }
-        guard open else { return }
-        // APK açık — bağlan ve logu güncelle
-        addLog("🔍 APK portu bulundu, bağlanılıyor...")
-        // apkService dışarıdan let olduğu için UI'ı güncelleyemeyiz
-        // en azından logu bilgilendir
-        addLog("⚠️ APK var ama bu oturumda aktif değil. Geri dönüp tekrar bağlanın.")
+        if open { addLog("⚠️ APK portu bulundu ama bu oturumda aktif değil. Geri dönüp tekrar bağlanın.") }
     }
 
     // MARK: - Reconnect
