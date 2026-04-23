@@ -11,26 +11,28 @@ struct TouchpadView: View {
     @State private var swipeCooldown = false
 
     var body: some View {
-        ZStack {
-            VStack(spacing: 6) {
-                touchpadArea
-                hScrollBar
-                clickButton
-                keyboardButton
-                actionButtons
-                Spacer(minLength: 8)
+        GeometryReader { geo in
+            ZStack {
+                VStack(spacing: geo.size.height * 0.012) {
+                    touchpadArea(geo: geo)
+                    hScrollBar(geo: geo)
+                    clickButton(geo: geo)
+                    keyboardButton(geo: geo)
+                    actionButtons(geo: geo)
+                    Spacer(minLength: 4)
+                }
+                if kbdVisible {
+                    KeyboardPopup(text: $kbdText, isVisible: $kbdVisible,
+                                  onSend: sendText, onBackspace: { apk.sendKey(67) }, onEnter: { apk.sendKey(66) })
+                }
             }
-            if kbdVisible {
-                KeyboardPopup(text: $kbdText, isVisible: $kbdVisible,
-                              onSend: sendText, onBackspace: { apk.sendKey(67) }, onEnter: { apk.sendKey(66) })
-            }
+            .background(Color.appBg)
         }
-        .background(Color.appBg)
     }
 
     // MARK: - Touchpad (UIKit wrapper for multi-touch)
 
-    private var touchpadArea: some View {
+    private func touchpadArea(geo: GeometryProxy) -> some View {
         HStack(spacing: 0) {
             TouchpadRepresentable(apk: apk, atv: atv)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -43,8 +45,8 @@ struct TouchpadView: View {
 
             swipeScrollBar
         }
-        .frame(maxHeight: .infinity)
-        .padding(.horizontal, 12).padding(.top, 8)
+        .frame(maxHeight: geo.size.height * 0.48)
+        .padding(.horizontal, geo.size.width * 0.03).padding(.top, geo.size.height * 0.01)
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.blueDeep, lineWidth: 2).padding(.horizontal, 12).padding(.top, 8))
     }
 
@@ -84,7 +86,7 @@ struct TouchpadView: View {
         }.onEnded { _ in swipeAccum = 0 })
     }
 
-    private var hScrollBar: some View {
+    private func hScrollBar(geo: GeometryProxy) -> some View {
         HStack {
             Button(action: { sendKey(AtvKey.dpadLeft) }) {
                 Image(systemName: "chevron.left").foregroundColor(.gray).padding(.horizontal, 8)
@@ -96,14 +98,14 @@ struct TouchpadView: View {
                 Image(systemName: "chevron.right").foregroundColor(.gray).padding(.horizontal, 8)
             }
         }
-        .frame(height: 36)
+        .frame(height: geo.size.height * 0.07)
         .background(Color(hex: "0d1117"))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.blueDeep, lineWidth: 2))
         .cornerRadius(16)
-        .padding(.horizontal, 12)
+        .padding(.horizontal, geo.size.width * 0.03)
     }
 
-    private var clickButton: some View {
+    private func clickButton(geo: GeometryProxy) -> some View {
         Button(action: {
             apk.tap()
             if atv.isConnected { atv.sendKey(AtvKey.dpadCenter) }
@@ -113,46 +115,46 @@ struct TouchpadView: View {
                 Image(systemName: "cursorarrow.click").foregroundColor(.greenOk)
                 Text("Tikla").foregroundColor(.greenOk).font(.system(size: 15))
             }
-            .frame(maxWidth: .infinity).frame(height: 52)
+            .frame(maxWidth: .infinity).frame(height: geo.size.height * 0.08)
             .background(Color(hex: "1a3a1a"))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.greenOk))
             .cornerRadius(12)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, geo.size.width * 0.03)
     }
 
-    private var keyboardButton: some View {
+    private func keyboardButton: some View {
         Button(action: { kbdVisible = true }) {
             Label("Klavye", systemImage: "keyboard").foregroundColor(.greenOk)
-                .frame(maxWidth: .infinity).padding(.vertical, 10)
+                .frame(maxWidth: .infinity).padding(.vertical, geo.size.height * 0.015)
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.greenOk))
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, geo.size.width * 0.03)
     }
 
-    private var actionButtons: some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 8) {
-                tpBtn(icon: "arrow.backward", label: "Geri")  { sendKey(AtvKey.back) }
-                tpBtn(icon: "house",          label: "Home")  { sendKey(AtvKey.home) }
-                tpBtn(icon: "play.fill",      label: "Play")  { sendKey(AtvKey.playPause) }
+    private func actionButtons: some View {
+        VStack(spacing: geo.size.height * 0.01) {
+            HStack(spacing: geo.size.width * 0.02) {
+                tpBtn(icon: "arrow.backward", label: "Geri", geo: geo)  { sendKey(AtvKey.back) }
+                tpBtn(icon: "house",          label: "Home", geo: geo)  { sendKey(AtvKey.home) }
+                tpBtn(icon: "play.fill",      label: "Play", geo: geo)  { sendKey(AtvKey.playPause) }
             }
-            HStack(spacing: 8) {
-                tpBtn(icon: "speaker.plus",   label: "Ses+")  { sendKey(AtvKey.volumeUp) }
-                tpBtn(icon: "speaker.minus",  label: "Ses-")  { sendKey(AtvKey.volumeDown) }
+            HStack(spacing: geo.size.width * 0.02) {
+                tpBtn(icon: "speaker.plus",   label: "Ses+", geo: geo)  { sendKey(AtvKey.volumeUp) }
+                tpBtn(icon: "speaker.minus",  label: "Ses-", geo: geo)  { sendKey(AtvKey.volumeDown) }
             }
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, geo.size.width * 0.03)
     }
 
-    private func tpBtn(icon: String, label: String, action: @escaping () -> Void) -> some View {
+    private func tpBtn(icon: String, label: String, geo: GeometryProxy, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 4) {
                 Image(systemName: icon).font(.system(size: 16))
                 Text(label).font(.system(size: 12))
             }
             .foregroundColor(.white)
-            .frame(maxWidth: .infinity).frame(height: 52)
+            .frame(maxWidth: .infinity).frame(height: geo.size.height * 0.08)
             .background(Color.blueDark)
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.blueDeep))
             .cornerRadius(12)

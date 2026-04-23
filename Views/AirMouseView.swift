@@ -39,57 +39,59 @@ struct AirMouseView: View {
     private static let SWIPE_THRESH:  Double = 40
 
     var body: some View {
-        ZStack {
-            VStack(spacing: 8) {
-                debugBar
-                toggleButton
-                mainArea
-                actionButtons
-                keyboardButton
-                sensitivitySlider
-                Spacer(minLength: 8)
+        GeometryReader { geo in
+            ZStack {
+                VStack(spacing: geo.size.height * 0.012) {
+                    debugBar(geo: geo)
+                    toggleButton(geo: geo)
+                    mainArea(geo: geo)
+                    actionButtons(geo: geo)
+                    keyboardButton(geo: geo)
+                    sensitivitySlider(geo: geo)
+                    Spacer(minLength: 4)
+                }
+                if kbdVisible { KeyboardPopup(text: $kbdText, isVisible: $kbdVisible, onSend: sendText, onBackspace: { apk.sendKey(67) }, onEnter: { apk.sendKey(66) }) }
             }
-            if kbdVisible { KeyboardPopup(text: $kbdText, isVisible: $kbdVisible, onSend: sendText, onBackspace: { apk.sendKey(67) }, onEnter: { apk.sendKey(66) }) }
+            .background(Color.appBg)
+            .onAppear  { startSensors() }
+            .onDisappear { stopSensors() }
         }
-        .background(Color.appBg)
-        .onAppear  { startSensors() }
-        .onDisappear { stopSensors() }
     }
 
     // MARK: - Sub-views
 
-    private var debugBar: some View {
+    private func debugBar(geo: GeometryProxy) -> some View {
         Text(debugText)
             .font(.system(size: 11, design: .monospaced))
             .foregroundColor(.greenOk)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(8)
+            .padding(geo.size.width * 0.02)
             .background(Color.terminalBg)
             .cornerRadius(10)
-            .padding(.horizontal, 12).padding(.top, 8)
+            .padding(.horizontal, geo.size.width * 0.03).padding(.top, geo.size.height * 0.01)
     }
 
-    private var toggleButton: some View {
+    private func toggleButton(geo: GeometryProxy) -> some View {
         Button(action: toggleAir) {
             Text(airOn ? "Air Modu" : "Kumanda Modu")
                 .foregroundColor(airOn ? .white : .redAccent)
-                .frame(maxWidth: .infinity).padding(.vertical, 11)
+                .frame(maxWidth: .infinity).padding(.vertical, geo.size.height * 0.018)
                 .background(airOn ? Color.redAccent : Color.blueDark)
                 .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.redAccent))
                 .cornerRadius(20)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, geo.size.width * 0.03)
     }
 
-    private var mainArea: some View {
+    private func mainArea: some View {
         HStack(spacing: 8) {
             // TIKLA area
             tapArea
             // Swipe scrollbar
             swipeBar
         }
-        .padding(.horizontal, 12)
-        .frame(maxHeight: .infinity)
+        .padding(.horizontal, geo.size.width * 0.03)
+        .frame(height: geo.size.height * 0.38)
     }
 
     private var tapArea: some View {
@@ -154,31 +156,31 @@ struct AirMouseView: View {
         }.onEnded { _ in swipeAccum = 0 })
     }
 
-    private var actionButtons: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 8) {
-                airBtn(icon: "arrow.backward", label: "Geri")  { sendKey(AtvKey.back) }
-                airBtn(icon: "house",          label: "Home")  { sendKey(AtvKey.home) }
+    private func actionButtons(geo: GeometryProxy) -> some View {
+        VStack(spacing: geo.size.height * 0.01) {
+            HStack(spacing: geo.size.width * 0.02) {
+                airBtn(icon: "arrow.backward", label: "Geri", geo: geo)  { sendKey(AtvKey.back) }
+                airBtn(icon: "house",          label: "Home", geo: geo)  { sendKey(AtvKey.home) }
             }
-            HStack(spacing: 8) {
-                airBtn(icon: "speaker.plus",   label: "Ses+")  { sendKey(AtvKey.volumeUp) }
-                airBtn(icon: "speaker.minus",  label: "Ses-")  { sendKey(AtvKey.volumeDown) }
+            HStack(spacing: geo.size.width * 0.02) {
+                airBtn(icon: "speaker.plus",   label: "Ses+", geo: geo)  { sendKey(AtvKey.volumeUp) }
+                airBtn(icon: "speaker.minus",  label: "Ses-", geo: geo)  { sendKey(AtvKey.volumeDown) }
             }
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, geo.size.width * 0.03)
     }
 
-    private var keyboardButton: some View {
+    private func keyboardButton(geo: GeometryProxy) -> some View {
         Button(action: { kbdVisible = true }) {
             Label("Klavye", systemImage: "keyboard")
                 .foregroundColor(.greenOk)
-                .frame(maxWidth: .infinity).padding(.vertical, 12)
+                .frame(maxWidth: .infinity).padding(.vertical, geo.size.height * 0.018)
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.greenOk))
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, geo.size.width * 0.03)
     }
 
-    private var sensitivitySlider: some View {
+    private func sensitivitySlider: some View {
         VStack(spacing: 4) {
             HStack {
                 Text("Hassasiyet").font(.system(size: 12)).foregroundColor(.gray)
@@ -187,19 +189,19 @@ struct AirMouseView: View {
             }
             Slider(value: $sensitivity, in: 5...150).tint(.redAccent)
         }
-        .padding(10)
+        .padding(geo.size.width * 0.025)
         .background(Color.terminalBg).cornerRadius(10)
-        .padding(.horizontal, 12)
+        .padding(.horizontal, geo.size.width * 0.03)
     }
 
-    private func airBtn(icon: String, label: String, action: @escaping () -> Void) -> some View {
+    private func airBtn(icon: String, label: String, geo: GeometryProxy, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 6) {
                 Image(systemName: icon).font(.system(size: 16))
                 Text(label).font(.system(size: 13))
             }
             .foregroundColor(.white)
-            .frame(maxWidth: .infinity).frame(height: 52)
+            .frame(maxWidth: .infinity).frame(height: geo.size.height * 0.075)
             .background(Color.blueDark)
             .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.blueDeep))
             .cornerRadius(14)

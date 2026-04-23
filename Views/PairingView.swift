@@ -7,22 +7,26 @@ struct PairingView: View {
     @StateObject private var vm = PairingVM()
 
     var body: some View {
-        ZStack { Color.appBg.ignoresSafeArea()
-            ScrollView {
-                VStack(spacing: 24) {
-                    Image(systemName: "link").font(.system(size: 56)).foregroundColor(.redAccent)
+        GeometryReader { geo in
+            ZStack { Color.appBg.ignoresSafeArea()
+                ScrollView {
+                    VStack(spacing: geo.size.height * 0.03) {
+                        Image(systemName: "link")
+                            .font(.system(size: min(geo.size.width * 0.14, 56)))
+                            .foregroundColor(.redAccent)
 
-                    Text(vm.status).font(.body).foregroundColor(.white).multilineTextAlignment(.center)
+                        Text(vm.status).font(.body).foregroundColor(.white).multilineTextAlignment(.center)
 
-                    if vm.waitingPin {
-                        pinSection
-                    } else if !vm.status.contains("Hata") && !vm.status.contains("kurulamadı") {
-                        ProgressView().tint(.redAccent)
+                        if vm.waitingPin {
+                            pinSection(geo: geo)
+                        } else if !vm.status.contains("Hata") && !vm.status.contains("kurulamadı") {
+                            ProgressView().tint(.redAccent)
+                        }
+
+                        if !vm.logs.isEmpty { logBox }
                     }
-
-                    if !vm.logs.isEmpty { logBox }
+                    .padding(geo.size.width * 0.06)
                 }
-                .padding(24)
             }
         }
         .navigationTitle("TV Eşleştirme — \(device.ip)")
@@ -36,10 +40,10 @@ struct PairingView: View {
 
     // MARK: - PIN section
 
-    private var pinSection: some View {
-        VStack(spacing: 16) {
+    private func pinSection(geo: GeometryProxy) -> some View {
+        VStack(spacing: geo.size.height * 0.02) {
             TextField("XXXXXX", text: $vm.pin)
-                .font(.system(size: 32, weight: .bold, design: .monospaced))
+                .font(.system(size: min(geo.size.width * 0.08, 32), weight: .bold, design: .monospaced))
                 .tracking(8)
                 .multilineTextAlignment(.center)
                 .foregroundColor(.white)
@@ -59,7 +63,7 @@ struct PairingView: View {
                         Text("Onayla").font(.headline).foregroundColor(.white)
                     }
                 }
-                .frame(maxWidth: .infinity).frame(height: 52)
+                .frame(maxWidth: .infinity).frame(height: geo.size.height * 0.075)
                 .background(Color.redAccent).cornerRadius(12)
             }
             .disabled(vm.verifying)

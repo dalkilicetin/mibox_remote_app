@@ -46,20 +46,21 @@ struct SetupView: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                Color.appBg.ignoresSafeArea()
-                VStack(spacing: 0) {
-                    header
-                    if discovery.isScanning {
-                        ProgressView().progressViewStyle(.linear).tint(.redAccent)
-                            .padding(.horizontal, 24).padding(.bottom, 8)
-                    }
-                    deviceList
-                    bottomBar
+            GeometryReader { geo in
+                ZStack {
+                    Color.appBg.ignoresSafeArea()
+                    VStack(spacing: 0) {
+                        headerView(geo: geo)
+                        if discovery.isScanning {
+                            ProgressView().progressViewStyle(.linear).tint(.redAccent)
+                                .padding(.horizontal, geo.size.width * 0.06).padding(.bottom, 8)
+                        }
+                        deviceList
+                        bottomBar(geo: geo)
 
-                    // Hidden NavigationLinks for old iOS support
-                    NavigationLink(destination: destinationView, isActive: .init(get: { destination != nil }, set: { if !$0 { destination = nil } })) {
-                        EmptyView()
+                        NavigationLink(destination: destinationView, isActive: .init(get: { destination != nil }, set: { if !$0 { destination = nil } })) {
+                            EmptyView()
+                        }
                     }
                 }
             }
@@ -89,13 +90,17 @@ struct SetupView: View {
         }
     }
 
-    private var header: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "tv").font(.system(size: 52)).foregroundColor(.redAccent)
+    private func headerView(geo: GeometryProxy) -> some View {
+        VStack(spacing: geo.size.height * 0.01) {
+            Image(systemName: "tv")
+                .font(.system(size: min(geo.size.width * 0.13, 52)))
+                .foregroundColor(.redAccent)
             Text("Mi Box Remote").font(.title.bold()).foregroundColor(.white)
             Text(discovery.status).font(.caption).foregroundColor(.gray).multilineTextAlignment(.center)
         }
-        .padding(.top, 28).padding(.bottom, 16).padding(.horizontal, 20)
+        .padding(.top, geo.size.height * 0.04)
+        .padding(.bottom, geo.size.height * 0.02)
+        .padding(.horizontal, geo.size.width * 0.05)
     }
 
     private var deviceList: some View {
@@ -123,14 +128,14 @@ struct SetupView: View {
         .frame(maxHeight: .infinity)
     }
 
-    private var bottomBar: some View {
-        HStack(spacing: 10) {
+    private func bottomBar(geo: GeometryProxy) -> some View {
+        HStack(spacing: geo.size.width * 0.025) {
             Button(action: { discovery.startScan() }) {
                 Label(discovery.isScanning ? "Aranıyor..." : "Yeniden Tara",
                       systemImage: "arrow.clockwise")
                     .foregroundColor(.redAccent)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 13)
+                    .padding(.vertical, geo.size.height * 0.018)
                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.redAccent))
             }
             .disabled(discovery.isScanning)
@@ -142,11 +147,13 @@ struct SetupView: View {
                 Label("Manuel IP", systemImage: "pencil")
                     .foregroundColor(.gray)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 13)
+                    .padding(.vertical, geo.size.height * 0.018)
                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray))
             }
         }
-        .padding(.horizontal, 16).padding(.bottom, 20).padding(.top, 8)
+        .padding(.horizontal, geo.size.width * 0.04)
+        .padding(.bottom, geo.size.height * 0.03)
+        .padding(.top, geo.size.height * 0.01)
     }
 
     // MARK: - Actions
