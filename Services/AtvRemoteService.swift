@@ -95,7 +95,7 @@ final class AtvRemoteService: ObservableObject {
             Task {
                 try? await Task.sleep(for: .seconds(5))
                 guard !done else { return }; done = true
-                Task { @MainActor in self?.log("⏰ Bağlantı zaman aşımı (5s)") }
+                Task { @MainActor [self] in self.log("⏰ Bağlantı zaman aşımı (5s)") }
                 conn.cancel(); cont.resume(returning: false)
             }
         }
@@ -139,7 +139,7 @@ final class AtvRemoteService: ObservableObject {
         connection?.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, done, err in
             guard let self else { return }
             if let data { Task { @MainActor in self.handleData(data) } }
-            if err == nil && !done { self.receive() }
+            if err == nil && !done { Task { @MainActor in self.receive() } }
             else {
                 if let err { Task { @MainActor in self.log("📡 Receive hata: \(err)") } }
                 Task { @MainActor in self.onDisconnect() }

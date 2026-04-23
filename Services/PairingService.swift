@@ -71,7 +71,7 @@ final class PairingService {
         sec_protocol_options_set_local_identity(tlsOpts.securityProtocolOptions, sec_identity_create(identity)!)
         sec_protocol_options_set_verify_block(tlsOpts.securityProtocolOptions, { [weak self] _, trust, complete in
             let cfTrust = sec_trust_copy_ref(trust).takeRetainedValue()
-            if let sc = SecTrustGetCertificateAtIndex(cfTrust, 0) {
+            if let chain = SecTrustCopyCertificateChain(cfTrust) as? [SecCertificate], let sc = chain.first {
                 DispatchQueue.main.async {
                     self?.serverCert = sc
                     self?.log("📜 Server sertifikası alındı")
@@ -110,7 +110,7 @@ final class PairingService {
             Task {
                 try? await Task.sleep(for: .seconds(5))
                 guard !done else { return }; done = true
-                Task { @MainActor in self?.log("⏰ Pairing bağlantısı zaman aşımı") }
+                Task { @MainActor [self] in self.log("⏰ Pairing bağlantısı zaman aşımı") }
                 conn.cancel()
                 KeychainHelper.deleteTempIdentity(label: label)
                 cont.resume(throwing: Err.timeout)
@@ -250,7 +250,7 @@ final class PairingService {
         connection?.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, done, err in
             guard let self else { return }
             if let data { Task { @MainActor in self.processRecv(data) } }
-            if err == nil && !done { self.receive() }
+            if err == nil && !done { Task { @MainActor in self.receive() } }
             else if let err { Task { @MainActor in self.log("📡 Receive hata: \(err)") } }
         }
     }
