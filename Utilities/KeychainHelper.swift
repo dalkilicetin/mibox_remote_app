@@ -3,33 +3,34 @@ import Security
 
 enum KeychainHelper {
 
-    // MARK: - Raw DER storage (kSecClassGenericPassword — en güvenilir)
+    // MARK: - Raw DER storage (kSecClassGenericPassword)
+    // Key olarak MAC adresi kullanıyoruz (IP değişebilir, MAC değişmez).
+    // MAC yoksa fallback olarak IP kullanılır.
 
     private static let certDERPrefix = "mibox_cert_der_"
     private static let keyDERPrefix  = "mibox_key_der_"
 
-    static func storeCertAndKey(ip: String, certDER: Data, keyDER: Data) {
-        saveData(certDER, account: certDERPrefix + ip)
-        saveData(keyDER,  account: keyDERPrefix  + ip)
+    static func storeCertAndKey(certKey: String, certDER: Data, keyDER: Data) {
+        saveData(certDER, account: certDERPrefix + certKey)
+        saveData(keyDER,  account: keyDERPrefix  + certKey)
     }
 
-    static func deleteCertAndKey(ip: String) {
-        deleteData(account: certDERPrefix + ip)
-        deleteData(account: keyDERPrefix  + ip)
+    static func deleteCertAndKey(certKey: String) {
+        deleteData(account: certDERPrefix + certKey)
+        deleteData(account: keyDERPrefix  + certKey)
     }
 
-    static func hasCert(ip: String) -> Bool {
-        loadData(account: certDERPrefix + ip) != nil
+    static func hasCert(certKey: String) -> Bool {
+        loadData(account: certDERPrefix + certKey) != nil
     }
 
     // MARK: - Identity reconstruction
 
-    static func loadIdentity(label: String) -> SecIdentity? {
-        let ip = String(label.dropFirst("mibox_identity_".count))
-        guard !ip.isEmpty,
-              let certDER = loadData(account: certDERPrefix + ip),
-              let keyDER  = loadData(account: keyDERPrefix  + ip) else {
-            print("[Keychain] DER data bulunamadı: \(label)")
+    static func loadIdentity(certKey: String) -> SecIdentity? {
+        guard !certKey.isEmpty,
+              let certDER = loadData(account: certDERPrefix + certKey),
+              let keyDER  = loadData(account: keyDERPrefix  + certKey) else {
+            print("[Keychain] DER data bulunamadı: \(certKey)")
             return nil
         }
 
@@ -49,8 +50,7 @@ enum KeychainHelper {
             return nil
         }
 
-        // Cert+key'i geçici olarak keychain'e koy, hemen identity olarak yükle
-        let tempLabel = "mibox_temp_id_\(ip)"
+        let tempLabel = "mibox_temp_id_\(certKey)"
         deleteIdentityItems(label: tempLabel)
 
         let certQ: [String: Any] = [kSecClass as String: kSecClassCertificate, kSecValueRef as String: cert, kSecAttrLabel as String: tempLabel]
@@ -76,16 +76,12 @@ enum KeychainHelper {
             deleteIdentityItems(label: tempLabel)
             return nil
         }
-        // SecIdentity artık bellekte tutulduğundan Keychain'deki temp items'ı temizle.
-        // Temizlenmezse her loadIdentity çağrısında birikir; iOS hangi cert'i kullanacağını
-        // karıştırabilir ve TLS client auth başarısız olur.
+        // Temp items'ı temizle — SecIdentity artık bellekte
         deleteIdentityItems(label: tempLabel)
         return (idRef as! SecIdentity)
     }
 
-    static func identityLabel(ip: String) -> String { "mibox_identity_\(ip)" }
-
-    // Pairing TLS için: cert+key'den anında identity üret (geçici keychain kaydı)
+    // Pairing TLS için geçici identity
     static func buildTempIdentity(cert: SecCertificate, privateKey: SecKey, label: String) -> SecIdentity? {
         deleteIdentityItems(label: label)
         let certQ: [String: Any] = [kSecClass as String: kSecClassCertificate, kSecValueRef as String: cert, kSecAttrLabel as String: label]
@@ -108,6 +104,59 @@ enum KeychainHelper {
     private static func deleteIdentityItems(label: String) {
         SecItemDelete([kSecClass: kSecClassCertificate, kSecAttrLabel: label] as CFDictionary)
         SecItemDelete([kSecClass: kSecClassKey,         kSecAttrLabel: label] as CFDictionary)
+    }
+
+    // MARK: - TV sertifikasından MAC parse et
+    // TV cert CN örneği: "atvremote/darcy/darcy/SHIELD Android TV/AA:BB:CC:DD:EE:FF"
+    // veya DNQualifier: "fugu/fugu/Nexus Player/CN=atvremote/AA:BB:CC:DD:EE:FF"
+    static func macFromServerCert(_ cert: SecCertificate) -> String? {
+        guard let summary = SecCertificateCopySubjectSummary(cert) as String? else { return nil }
+        // CN veya DNQualifier'ın son segmenti MAC adresi
+        let parts = summary.split(separator: "/").map { String($0) }
+        for part in parts.reversed() {
+            let trimmed = part.trimmingCharacters(in: .whitespaces)
+            // MAC formatı: XX:XX:XX:XX:XX:XX
+            if trimmed.count == 17,
+               trimmed.filter({ $0 == ":" }).count == 5,
+               trimmed.allSatisfy({ $0.isHexDigit || $0 == ":" }) {
+                return trimmed.uppercased()
+            }
+        }
+        // Fallback: summary'nin tamamına hex+colon regex uygula
+        let pattern = "([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}"
+        if let range = summary.range(of: pattern, options: .regularExpression) {
+            return String(summary[range]).uppercased()
+        }
+        return nil
+    }
+
+    // MARK: - UserDefaults (port ve IP cache)
+    // Port key'leri de certKey (MAC) bazlı
+
+    static func saveInt(_ v: Int,    key: String) { UserDefaults.standard.set(v, forKey: key) }
+    static func saveStr(_ v: String, key: String) { UserDefaults.standard.set(v, forKey: key) }
+    static func loadInt(_ key: String, def: Int)  -> Int    { let v = UserDefaults.standard.integer(forKey: key); return v == 0 ? def : v }
+    static func loadStr(_ key: String)            -> String? { UserDefaults.standard.string(forKey: key) }
+
+    // certKey (MAC veya IP) bazlı port kayıt
+    static func pairingPortKey(certKey: String) -> String { "atv_pairing_port_\(certKey)" }
+    static func remotePortKey(certKey: String)  -> String { "atv_remote_port_\(certKey)" }
+
+    // Geriye dönük uyumluluk (eski IP bazlı key'ler için — migration)
+    static func migrateLegacyKeys(fromIP ip: String, toMac mac: String) {
+        // Eski IP bazlı cert/key varsa MAC'e taşı
+        if let certDER = loadData(account: certDERPrefix + ip),
+           let keyDER  = loadData(account: keyDERPrefix  + ip) {
+            storeCertAndKey(certKey: mac, certDER: certDER, keyDER: keyDER)
+            deleteData(account: certDERPrefix + ip)
+            deleteData(account: keyDERPrefix  + ip)
+            print("[Keychain] Migration: \(ip) → \(mac)")
+        }
+        // Port kayıtlarını da taşı
+        let pPort = UserDefaults.standard.integer(forKey: "atv_pairing_port_\(ip)")
+        let rPort = UserDefaults.standard.integer(forKey: "atv_remote_port_\(ip)")
+        if pPort != 0 { UserDefaults.standard.set(pPort, forKey: pairingPortKey(certKey: mac)) }
+        if rPort != 0 { UserDefaults.standard.set(rPort, forKey: remotePortKey(certKey: mac)) }
     }
 
     // MARK: - Generic password helpers
@@ -139,14 +188,4 @@ enum KeychainHelper {
     private static func deleteData(account: String) {
         SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrAccount: account] as CFDictionary)
     }
-
-    // MARK: - UserDefaults
-
-    static func saveInt(_ v: Int,    key: String) { UserDefaults.standard.set(v, forKey: key) }
-    static func saveStr(_ v: String, key: String) { UserDefaults.standard.set(v, forKey: key) }
-    static func loadInt(_ key: String, def: Int)  -> Int    { let v = UserDefaults.standard.integer(forKey: key); return v == 0 ? def : v }
-    static func loadStr(_ key: String)            -> String? { UserDefaults.standard.string(forKey: key) }
-
-    static func pairingPortKey(ip: String) -> String { "atv_pairing_port_\(ip)" }
-    static func remotePortKey(ip: String)  -> String { "atv_remote_port_\(ip)" }
 }

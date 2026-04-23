@@ -32,6 +32,9 @@ final class PairingService {
     }
 
     private(set) var serverCert: SecCertificate?
+
+    /// TV'nin TLS sertifikasından parse edilen MAC adresi
+    var serverMac: String? { serverCert.flatMap { KeychainHelper.macFromServerCert($0) } }
     private var connection: NWConnection?
     private var recvBuf = Data()
     private var pending: [CheckedContinuation<Data, Error>] = []
@@ -208,7 +211,7 @@ final class PairingService {
 
     // MARK: - Persist identity
 
-    func saveIdentity(ip: String) {
+    func saveIdentity(certKey: String) {
         guard let cert = certificate, let kp = keyPair else {
             log("❌ saveIdentity — cert veya keyPair nil"); return
         }
@@ -217,13 +220,13 @@ final class PairingService {
         guard let keyDER = SecKeyCopyExternalRepresentation(kp.privateKey, &cfErr) as Data? else {
             log("❌ Private key export başarısız: \(cfErr?.takeRetainedValue() as Any)"); return
         }
-        log("💾 Keychain'e kaydediliyor (ip=\(ip), cert=\(certDER.count)b, key=\(keyDER.count)b)")
-        KeychainHelper.deleteCertAndKey(ip: ip)
-        KeychainHelper.storeCertAndKey(ip: ip, certDER: certDER, keyDER: keyDER)
-        let hasCert = KeychainHelper.hasCert(ip: ip)
-        log("💾 hasCert kontrol: \(hasCert)")
-        let verify = KeychainHelper.loadIdentity(label: KeychainHelper.identityLabel(ip: ip))
-        log(verify != nil ? "✅ Identity kaydedildi ve doğrulandı (\(ip))" : "❌ Identity doğrulanamadı (\(ip))")
+        log("💾 Keychain'e kaydediliyor (certKey=\(certKey), cert=\(certDER.count)b, key=\(keyDER.count)b)")
+        KeychainHelper.deleteCertAndKey(certKey: certKey)
+        KeychainHelper.storeCertAndKey(certKey: certKey, certDER: certDER, keyDER: keyDER)
+        let hasCert = KeychainHelper.hasCert(certKey: certKey)
+        log("💾 hasCert kontrol (key=\(certKey)): \(hasCert)")
+        let verify = KeychainHelper.loadIdentity(certKey: certKey)
+        log(verify != nil ? "✅ Identity kaydedildi ve doğrulandı (\(certKey))" : "❌ Identity doğrulanamadı (\(certKey))")
     }
 
     func close() {

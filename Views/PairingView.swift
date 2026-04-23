@@ -118,9 +118,11 @@ final class PairingVM: ObservableObject {
 
     private let svc = PairingService()
     private var deviceIP = ""
+    private var certKey  = ""  // MAC varsa MAC, yoksa IP
 
     func start(device: DiscoveredDevice) async {
         self.deviceIP = device.ip
+        self.certKey  = device.certKey
         svc.onLog = { [weak self] msg in Task { @MainActor in self?.addLog(msg) } }
         do {
             status = "Sertifika oluşturuluyor..."
@@ -134,8 +136,17 @@ final class PairingVM: ObservableObject {
                 do {
                     try await svc.connect(ip: device.ip, port: port)
                     try await svc.performHandshake()
-                    KeychainHelper.saveInt(port, key: KeychainHelper.pairingPortKey(ip: device.ip))
+                    KeychainHelper.saveInt(port, key: KeychainHelper.pairingPortKey(certKey: device.certKey))
                     connected = true
+                    // Bağlantı başarılı - serverCert'ten MAC al, certKey'i güncelle
+                    if let mac = svc.serverMac {
+                        self.certKey = mac
+                        addLog("📱 TV MAC: \(mac) → certKey güncellendi")
+                        // Eski IP bazlı kayıt varsa MAC'e migrate et
+                        KeychainHelper.migrateLegacyKeys(fromIP: device.ip, toMac: mac)
+                    } else {
+                        addLog("⚠️ TV MAC parse edilemedi, IP kullanılıyor: \(device.ip)")
+                    }
                     break
                 } catch {
                     addLog("Port \(port) hata: \(error.localizedDescription)")
@@ -160,8 +171,8 @@ final class PairingVM: ObservableObject {
         do {
             let ok = try await svc.sendPin(p)
             if ok {
-                svc.saveIdentity(ip: deviceIP)
-                KeychainHelper.saveInt(6466, key: KeychainHelper.remotePortKey(ip: deviceIP))
+                svc.saveIdentity(certKey: certKey)
+                KeychainHelper.saveInt(6466, key: KeychainHelper.remotePortKey(certKey: certKey))
                 status = "Eşleştirme başarılı!"
                 // TV'nin pairing bağlantısını kapatıp remote port'u açmasına zaman ver
                 try? await Task.sleep(for: .milliseconds(1500))

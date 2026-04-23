@@ -161,8 +161,8 @@ struct RemoteView: View {
             }
         }
 
-        guard let identity = KeychainHelper.loadIdentity(label: KeychainHelper.identityLabel(ip: device.ip)) else {
-            addLog("HATA: Sertifika bulunamadı!")
+        guard let identity = KeychainHelper.loadIdentity(certKey: device.certKey) else {
+            addLog("❌ Sertifika bulunamadı (certKey=\(device.certKey))!")
             isReconnecting = false
             return
         }

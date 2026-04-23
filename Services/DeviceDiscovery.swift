@@ -75,7 +75,7 @@ final class DeviceDiscovery: ObservableObject {
                             let ports = udpPorts[ip]
                             self.addDevice(DiscoveredDevice(
                                 ip: ip,
-                                hasCert: KeychainHelper.hasCert(ip: ip),
+                                hasCert: KeychainHelper.hasCert(certKey: ip),
                                 hasApk: apkIPs.contains(ip),
                                 pairingPort: ports?.pairing ?? 6467,
                                 remotePort:  ports?.remote  ?? 6466
@@ -118,7 +118,7 @@ final class DeviceDiscovery: ObservableObject {
                         await MainActor.run {
                             self.addDevice(DiscoveredDevice(
                                 ip: ip,
-                                hasCert: KeychainHelper.hasCert(ip: ip),
+                                hasCert: KeychainHelper.hasCert(certKey: ip),
                                 hasApk: apkIPs.contains(ip),
                                 pairingPort: ports?.pairing ?? 6467,
                                 remotePort:  ports?.remote  ?? 6466

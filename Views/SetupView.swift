@@ -160,7 +160,7 @@ struct SetupView: View {
     }
 
     private func repairDevice(_ device: DiscoveredDevice) {
-        KeychainHelper.deleteCertAndKey(ip: device.ip)
+        KeychainHelper.deleteCertAndKey(certKey: device.certKey)
         destination = .pairing(device)
     }
 
@@ -180,9 +180,9 @@ struct SetupView: View {
         guard !manualIP.isEmpty else { return }
         let ip = manualIP.trimmingCharacters(in: .whitespaces)
         KeychainHelper.saveStr(ip, key: "mibox_ip")
-        let pPort = KeychainHelper.loadInt(KeychainHelper.pairingPortKey(ip: ip), def: 6467)
-        let rPort = KeychainHelper.loadInt(KeychainHelper.remotePortKey(ip: ip),  def: 6466)
-        let hasCert = KeychainHelper.hasCert(ip: ip)
+        let pPort = KeychainHelper.loadInt(KeychainHelper.pairingPortKey(certKey: ip), def: 6467)
+        let rPort = KeychainHelper.loadInt(KeychainHelper.remotePortKey(certKey: ip),  def: 6466)
+        let hasCert = KeychainHelper.hasCert(certKey: ip)
         Task {
             var hasApk = false
             if await tcpCheck(ip: ip, port: 9876) { hasApk = true }
