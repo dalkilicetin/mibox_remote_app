@@ -1,0 +1,46 @@
+workflows:
+  ios-swift-workflow:
+    name: MiBox Remote Swift iOS Build
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      groups:
+        - apple_auth # Codemagic arayüzünden oluşturulacak grup adı
+      vars:
+        XCODE_PROJECT: "swift_app/MiBoxRemote.xcodeproj"
+        XCODE_SCHEME: "MiBoxRemote"
+        DEVELOPMENT_TEAM: "YOUR_TEAM_ID" # Bunu Codemagic'te env var olarak ezebilirsiniz
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+    scripts:
+      - name: Install XcodeGen
+        script: |
+          brew install xcodegen
+      - name: Generate Xcode Project
+        script: |
+          cd swift_app
+          xcodegen generate
+      - name: Set up code signing
+        script: |
+          keychain initialize
+          app-store-connect fetch-signing-files "com.mibox.remote" --type IOS_APP_DEVELOPMENT --create
+          keychain add-certificates
+          xcode-project use-profiles
+      - name: Build IPA for testing
+        script: |
+          xcode-project build-ipa \
+            --project "$XCODE_PROJECT" \
+            --scheme "$XCODE_SCHEME" \
+            --mode debug
+    artifacts:
+      - build/ios/ipa/*.ipa
+    publishing:
+      email:
+        recipients:
+          - your-email@example.com # Kendi e-postanızla değiştirin
+        on_failure: true
+        on_success: true
