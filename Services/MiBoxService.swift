@@ -133,7 +133,7 @@ final class MiBoxService: ObservableObject {
             }
             conn.start(queue: .global())
             Task {
-                try? await Task.sleep(for: .seconds(5))
+                try? await Task.sleep(for: .seconds(2))
                 guard !done else { return }; done = true
                 conn.cancel(); cont.resume(returning: false)
             }

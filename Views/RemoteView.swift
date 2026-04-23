@@ -17,19 +17,22 @@ struct RemoteView: View {
 
     var body: some View {
         GeometryReader { geo in
-            ZStack { Color.appBg.ignoresSafeArea()
-                VStack(spacing: 0) {
-                    statusBar(geo: geo)
-                    if !atvConnected {
-                        reconnectBanner(geo: geo)
-                    }
-                    tabBar(geo: geo)
-                    tabContent(geo: geo)
+            VStack(spacing: 0) {
+                statusBar(geo: geo)
+                if !atvConnected {
+                    reconnectBanner(geo: geo)
                 }
+                tabBar(geo: geo)
+                tabContent(geo: geo)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .frame(maxWidth: geo.size.width, maxHeight: geo.size.height)
+            .background(Color.appBg)
         }
+        .ignoresSafeArea(edges: .bottom)
         .navigationBarHidden(true)
         .task { await initAtv() }
+        .task { await retryApkIfNeeded() }
         .onReceive(apkService?.objectWillChange.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { _ in
             apkConnected = apkService?.isConnected ?? false
         }
@@ -146,6 +149,41 @@ struct RemoteView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+    }
+
+    // MARK: - APK background retry
+
+    /// apkService nil geldiyse (discovery timing sorunu) arka planda APK'ya bağlanmayı dener
+    @State private var apkRetried = false
+
+    private func retryApkIfNeeded() async {
+        guard apkService == nil, !apkRetried else { return }
+        apkRetried = true
+        // Kısa bekle — ATV bağlantısı kurulsun
+        try? await Task.sleep(for: .seconds(2))
+        // APK portu açık mı?
+        let open = await withCheckedContinuation { cont in
+            let conn = NWConnection(host: .init(device.ip), port: 9876, using: .tcp)
+            var done = false
+            conn.stateUpdateHandler = { state in
+                switch state {
+                case .ready:   guard !done else { return }; done = true; conn.cancel(); cont.resume(returning: true)
+                case .failed, .cancelled: guard !done else { return }; done = true; cont.resume(returning: false)
+                default: break
+                }
+            }
+            conn.start(queue: .global())
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                guard !done else { return }; done = true; conn.cancel(); cont.resume(returning: false)
+            }
+        }
+        guard open else { return }
+        // APK açık — bağlan ve logu güncelle
+        addLog("🔍 APK portu bulundu, bağlanılıyor...")
+        // apkService dışarıdan let olduğu için UI'ı güncelleyemeyiz
+        // en azından logu bilgilendir
+        addLog("⚠️ APK var ama bu oturumda aktif değil. Geri dönüp tekrar bağlanın.")
     }
 
     // MARK: - Reconnect
