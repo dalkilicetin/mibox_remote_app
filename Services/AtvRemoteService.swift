@@ -137,7 +137,7 @@ final class AtvRemoteService: ObservableObject {
         info.writeString(field: 5, value: "com.google.android.tv.remote")
         info.writeString(field: 6, value: "1.0.0")
         let cfg = ProtoWriter()
-        cfg.writeVarint(field: 1, value: 615)
+        cfg.writeVarint(field: 1, value: 1)
         cfg.writeBytes(field: 2, value: info.toData())
         let msg = ProtoWriter()
         msg.writeBytes(field: 1, value: cfg.toData())
@@ -145,7 +145,7 @@ final class AtvRemoteService: ObservableObject {
     }
 
     private func sendSetActive() {
-        let a = ProtoWriter(); a.writeVarint(field: 1, value: 615)
+        let a = ProtoWriter(); a.writeVarint(field: 1, value: 1)
         let m = ProtoWriter(); m.writeBytes(field: 2, value: a.toData())
         sendMsg(m.toData()); log("→ set_active")
     }
