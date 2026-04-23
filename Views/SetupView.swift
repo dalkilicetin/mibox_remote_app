@@ -6,6 +6,7 @@ struct SetupView: View {
     @State private var destination: NavDest?
     @State private var showManualEntry = false
     @State private var manualIP = ""
+    @State private var isAutoConnecting = false
 
     enum NavDest: Identifiable, Hashable {
         case pairing(DiscoveredDevice)
@@ -65,7 +66,7 @@ struct SetupView: View {
                 }
             }
         }
-        .onAppear { discovery.startScan() }
+        .onAppear { Task { await tryAutoConnect() } }
         .onDisappear { discovery.stop() }
         .alert("Manuel IP Gir", isPresented: $showManualEntry) {
             TextField("192.168.x.x", text: $manualIP)
@@ -96,7 +97,14 @@ struct SetupView: View {
                 .font(.system(size: min(geo.size.width * 0.13, 52)))
                 .foregroundColor(.redAccent)
             Text("Mi Box Remote").font(.title.bold()).foregroundColor(.white)
-            Text(discovery.status).font(.caption).foregroundColor(.gray).multilineTextAlignment(.center)
+            if isAutoConnecting {
+                HStack(spacing: 8) {
+                    ProgressView().progressViewStyle(.circular).scaleEffect(0.7).tint(.redAccent)
+                    Text("Son cihaza bağlanılıyor...").font(.caption).foregroundColor(.redAccent)
+                }
+            } else {
+                Text(discovery.status).font(.caption).foregroundColor(.gray).multilineTextAlignment(.center)
+            }
         }
         .padding(.top, geo.size.height * 0.04)
         .padding(.bottom, geo.size.height * 0.02)
@@ -173,6 +181,7 @@ struct SetupView: View {
 
     private func launchRemote(_ device: DiscoveredDevice) {
         KeychainHelper.saveStr(device.ip, key: "mibox_ip")
+        KeychainHelper.saveStr(device.certKey, key: "mibox_certkey")
         Task {
             // hasApk flag'ini yok say — discovery timing'e bağlı, güvenilmez.
             // Her zaman TCP 9876'yı dene; APK açıksa bağlanır, değilse nil döner.
@@ -191,6 +200,45 @@ struct SetupView: View {
         }
     }
 
+    // MARK: - Auto-connect
+
+    /// Uygulama açılışında: son bağlanılan cihaz varsa ve cert kaydedilmişse
+    /// discovery yapmadan direkt bağlanmayı dener.
+    private func tryAutoConnect() async {
+        guard let savedIP = KeychainHelper.loadStr("mibox_ip"),
+              !savedIP.isEmpty else {
+            // Hiç bağlanılmamış — normal scan başlat
+            discovery.startScan(); return
+        }
+
+        let certKey = KeychainHelper.loadStr("mibox_certkey") ?? savedIP
+        guard KeychainHelper.hasCert(certKey: certKey) else {
+            // Cert yok — eşleştirilmemiş cihaz, scan başlat
+            discovery.startScan(); return
+        }
+
+        isAutoConnecting = true
+
+        // TCP üzerinden cihazın hâlâ erişilebilir olduğunu kontrol et (1.5s timeout)
+        let reachable = await tcpCheck(ip: savedIP, port: 6466, timeout: 1.5)
+        guard reachable else {
+            // Cihaz erişilemez (farklı ağ, TV kapalı) — scan başlat
+            isAutoConnecting = false
+            discovery.startScan(); return
+        }
+
+        // Cihaz erişilebilir — discovery atla, direkt bağlan
+        let pPort = KeychainHelper.loadInt(KeychainHelper.pairingPortKey(certKey: certKey), def: 6467)
+        let rPort = KeychainHelper.loadInt(KeychainHelper.remotePortKey(certKey: certKey),  def: 6466)
+        var device = DiscoveredDevice(ip: savedIP, hasCert: true,
+                                      pairingPort: pPort, remotePort: rPort)
+        // certKey'i set et (MAC ise MAC, değilse IP)
+        if certKey != savedIP { device.mac = certKey }
+
+        isAutoConnecting = false
+        launchRemote(device)
+    }
+
     private func connectManual() {
         guard !manualIP.isEmpty else { return }
         let ip = manualIP.trimmingCharacters(in: .whitespaces)
@@ -207,7 +255,7 @@ struct SetupView: View {
         }
     }
 
-    private func tcpCheck(ip: String, port: Int) async -> Bool {
+    private func tcpCheck(ip: String, port: Int, timeout: Double = 2.0) async -> Bool {
         await withCheckedContinuation { cont in
             let conn = NWConnection(host: .init(ip), port: .init(rawValue: UInt16(port))!, using: .tcp)
             var done = false
@@ -220,7 +268,7 @@ struct SetupView: View {
             }
             conn.start(queue: .global())
             Task {
-                try? await Task.sleep(for: .seconds(2))
+                try? await Task.sleep(for: .seconds(timeout))
                 guard !done else { return }; done = true; conn.cancel(); cont.resume(returning: false)
             }
         }
