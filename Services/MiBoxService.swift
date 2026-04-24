@@ -23,41 +23,18 @@ final class MiBoxService: ObservableObject {
 
     private var connection: NWConnection?
     private var recvBuf    = Data()
-    private var retryTask:  Task<Void, Never>?
-    private var targetIP:   String = ""
+    // MARK: - Connect
 
-    // MARK: - Connect (non-blocking, with auto-retry)
-
-    /// Bağlantı kurmayı dener. Başarısız olursa arka planda tekrar dener.
-    /// ATV bağlantısını asla bloklamamalı — bu fonksiyon hızlı döner.
-    func connectContinuous(to ip: String) {
-        targetIP = ip
-        retryTask?.cancel()
-        retryTask = Task { [weak self] in
-            guard let self else { return }
-            var delay: UInt64 = 0
-            while !Task.isCancelled {
-                if !isConnected {
-                    _ = await attemptConnect(to: ip)
-                }
-                // Bağlandıysa 5s'de bir canlılık kontrol et, bağlı değilse 3s'de tekrar dene
-                let wait: UInt64 = isConnected ? 5_000_000_000 : 3_000_000_000
-                try? await Task.sleep(nanoseconds: wait + delay)
-                delay = 0
-            }
-        }
-    }
-
-    /// Tek seferlik bağlantı denemesi (2s timeout). SetupView'daki probe için.
+    /// TCP bağlantısı dener (2s timeout). 
+    /// Retry mantığı RemoteView tarafından yönetilir.
     func connect(to ip: String) async -> Bool {
+        disconnect()
         return await attemptConnect(to: ip)
     }
 
     func disconnect() {
-        retryTask?.cancel(); retryTask = nil
         connection?.cancel(); connection = nil
         isConnected = false; recvBuf.removeAll()
-        targetIP = ""
     }
 
     private func attemptConnect(to ip: String) async -> Bool {
@@ -130,16 +107,18 @@ final class MiBoxService: ObservableObject {
                 var tv = timeval(tv_sec: 0, tv_usec: 100_000)
                 setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
-                // Broadcast to all known subnet addresses + 255.255.255.255
                 let magic  = Data(discoveryMagic.utf8)
                 let baddrs = broadcastAddresses()
+
+                print("[APK-DISC] Broadcast adresleri: \(baddrs)")
+                print("[APK-DISC] Magic: \(discoveryMagic) → port \(discoveryPort)")
 
                 for addr in baddrs {
                     var dest = sockaddr_in()
                     dest.sin_family = sa_family_t(AF_INET)
                     dest.sin_port   = discoveryPort.bigEndian
                     inet_pton(AF_INET, addr, &dest.sin_addr)
-                    magic.withUnsafeBytes { ptr in
+                    let sent = magic.withUnsafeBytes { ptr in
                         withUnsafePointer(to: dest) { dp in
                             dp.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                                 sendto(sock, ptr.baseAddress, magic.count, 0, $0,
@@ -147,13 +126,14 @@ final class MiBoxService: ObservableObject {
                             }
                         }
                     }
+                    print("[APK-DISC] sendto \(addr):9877 → \(sent) bytes (errno=\(errno))")
                 }
 
-                // Collect responses until timeout
                 let deadline = Date().addingTimeInterval(timeout)
                 var buf = [UInt8](repeating: 0, count: 4096)
                 var src = sockaddr_in()
                 var srcLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+                var recvCount = 0
 
                 while Date() < deadline {
                     let n = withUnsafeMutablePointer(to: &src) {
@@ -161,15 +141,23 @@ final class MiBoxService: ObservableObject {
                             recvfrom(sock, &buf, buf.count, 0, $0, &srcLen)
                         }
                     }
-                    if n > 0,
-                       let json = try? JSONSerialization.jsonObject(with: Data(buf[0..<n])) as? [String: Any],
-                       json["service"] as? String == "aircursor" {
-                        var ipBuf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
-                        inet_ntop(AF_INET, &src.sin_addr, &ipBuf, socklen_t(INET_ADDRSTRLEN))
-                        let ip = String(cString: ipBuf)
-                        if !ip.isEmpty && !foundIPs.contains(ip) { foundIPs.append(ip) }
+                    if n > 0 {
+                        recvCount += 1
+                        let raw = String(bytes: buf[0..<n], encoding: .utf8) ?? "<binary>"
+                        print("[APK-DISC] recvfrom \(n)b: \(raw)")
+                        if let json = try? JSONSerialization.jsonObject(with: Data(buf[0..<n])) as? [String: Any],
+                           json["service"] as? String == "aircursor" {
+                            var ipBuf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+                            inet_ntop(AF_INET, &src.sin_addr, &ipBuf, socklen_t(INET_ADDRSTRLEN))
+                            let ip = String(cString: ipBuf)
+                            print("[APK-DISC] ✅ APK bulundu: \(ip)")
+                            if !ip.isEmpty && !foundIPs.contains(ip) { foundIPs.append(ip) }
+                        } else {
+                            print("[APK-DISC] ⚠️ service=aircursor değil, skip")
+                        }
                     }
                 }
+                print("[APK-DISC] Bitti. recvCount=\(recvCount) foundIPs=\(foundIPs)")
 
                 if !done { done = true; cont.resume(returning: foundIPs) }
             }
