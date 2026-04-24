@@ -34,7 +34,6 @@ import Security
 final class AtvRemoteService: ObservableObject {
     @Published var isConnected = false
     var onLog: ((String) -> Void)?
-    /// TLS cert hatası alınınca tetiklenir — RemoteView pairing'e düşer
     var onCertInvalid: (() -> Void)?
 
     private var connection: NWConnection?
@@ -42,24 +41,36 @@ final class AtvRemoteService: ObservableObject {
     private var configured = false
     private var activeFeatures = 611
     private var pingTask: Task<Void, Never>?
-    private var pingTimeoutTask: Task<Void, Never>?   // Bug 1: ping timeout
+    private var pingTimeoutTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     private var ip = ""
     private var port = 6466
     private var identity: SecIdentity?
-    private var lastPingTime = Date()                 // Bug 1: ghost connection önleme
-    private var receivedAnyData = false               // Bug 5: fallback configure guard
-    // Sonsuz döngü önleme: cert error callback sadece bir kez tetiklensin
+    private var lastPingTime = Date()
+    private var receivedAnyData = false
     private var certErrorFired = false
+    // Fix 2: her connection'a benzersiz ID — eski async callback'leri geçersiz kılar
+    private var sessionId = UUID()
+    // Fix 4: pairing açıkken reconnect başlatma
+    private var isPairing = false
 
     func setIdentity(_ id: SecIdentity) { identity = id }
+
+    /// Pairing başladığında RemoteView çağırır — reconnect bloklanır
+    func setPairing(_ active: Bool) {
+        isPairing = active
+        if active { reconnectTask?.cancel(); reconnectTask = nil }
+    }
 
     // MARK: - Connect
 
     func connect(ip: String, port: Int = 6466) async -> Bool {
         self.ip = ip; self.port = port
-        certErrorFired = false        // yeni connect denemesi — sıfırla
+        certErrorFired = false
         receivedAnyData = false
+        // Fix 2: yeni session — önceki async callback'ler bu ID'yi eşleştiremez → ignore
+        let currentSession = UUID()
+        sessionId = currentSession
         cancelInternal()
         guard let identity else { log("❌ Sertifika yok"); return false }
 
@@ -78,6 +89,11 @@ final class AtvRemoteService: ObservableObject {
                 case .ready:
                     guard !done else { return }; done = true
                     Task { @MainActor in
+                        // Fix 2: session kontrolü
+                        guard self?.sessionId == currentSession else {
+                            self?.log("⚠️ Eski session ready, ignore")
+                            conn.cancel(); return
+                        }
                         self?.isConnected = true
                         self?.startReceive()
                         self?.scheduleFallbackConfigure()
@@ -87,6 +103,7 @@ final class AtvRemoteService: ObservableObject {
                 case .failed(let e):
                     guard !done else { return }; done = true
                     Task { @MainActor in
+                        guard self?.sessionId == currentSession else { return }
                         self?.log("❌ Bağlantı hatası: \(e.localizedDescription)")
                         if self?.isCertError(e.localizedDescription) == true {
                             self?.onCertError(e.localizedDescription)
@@ -105,11 +122,14 @@ final class AtvRemoteService: ObservableObject {
                 }
             }
             conn.start(queue: .global())
-            // Bug 4: 8sn timeout — bazı TV'ler 6-8sn açılıyor
+            // 8sn timeout
             Task {
                 try? await Task.sleep(for: .seconds(8))
                 guard !done else { return }; done = true
-                Task { @MainActor [self] in self.log("⏰ Bağlantı zaman aşımı (8s)") }
+                Task { @MainActor [self] in
+                    guard self.sessionId == currentSession else { return }
+                    self.log("⏰ Bağlantı zaman aşımı (8s)")
+                }
                 conn.cancel(); cont.resume(returning: false)
             }
         }
@@ -349,18 +369,16 @@ final class AtvRemoteService: ObservableObject {
     // MARK: - Cert error detection
     // -9825 bad certificate, -9824 handshake fail, -9813 cert expired
     // iOS bazen sadece "handshake failed" veya "TLS alert" verir — hepsini yakala
-    // MARK: - Cert error detection
-    // "98" genel match KALDIRILDI — false positive yapıyordu → sonsuz döngü
+    // Fix 1: sadece gerçek cert hataları — "98" ve geniş "tls" match kaldırıldı
     private func isCertError(_ desc: String) -> Bool {
         let d = desc.lowercased()
-        return d.contains("9825") || d.contains("9824") || d.contains("9813")
+        return d.contains("-9825") || d.contains("-9824") || d.contains("-9813")
+            || d.contains("9825")  || d.contains("9813")
             || d.contains("bad certificate")
             || d.contains("certificate unknown")
-            || (d.contains("tls") && d.contains("alert"))
             || d.contains("handshake failure")
     }
 
-    /// Bug 5: TV'den hiç veri gelmemişse fallback configure çalıştır.
     private func scheduleFallbackConfigure() {
         Task {
             try? await Task.sleep(for: .seconds(4))
@@ -379,7 +397,6 @@ final class AtvRemoteService: ObservableObject {
         }
     }
 
-    // Bug 1: Ping timeout — ghost connection önleme
     private func startPing() {
         pingTask?.cancel()
         pingTimeoutTask?.cancel()
@@ -401,6 +418,13 @@ final class AtvRemoteService: ObservableObject {
     }
 
     private func onDisconnect() {
+        // Fix 4: pairing açıkken reconnect başlatma
+        guard !isPairing else {
+            log("ℹ️ Pairing devam ediyor — reconnect atlandı")
+            configured = false; isConnected = false
+            pingTask?.cancel(); pingTimeoutTask?.cancel()
+            return
+        }
         guard isConnected || configured else { return }
         configured = false; isConnected = false
         pingTask?.cancel()
@@ -415,7 +439,6 @@ final class AtvRemoteService: ObservableObject {
         }
     }
 
-    /// Cert hatası — reconnect OLMAZ. certErrorFired ile sonsuz döngü önlenir.
     private func onCertError(_ desc: String) {
         guard !certErrorFired else {
             log("ℹ️ Cert error zaten tetiklendi, yoksayılıyor")

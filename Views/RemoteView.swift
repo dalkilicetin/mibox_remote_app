@@ -12,7 +12,9 @@ struct RemoteView: View {
     @State private var logs: [String] = []
     @State private var selectedTab = 0
     @State private var isReconnecting = false
-    @State private var showPairing = false   // cert invalid → pairing sheet
+    @State private var showPairing = false
+    // Fix 3: pairing lock — onCertInvalid iki kez tetiklenirse ikincisi ignore edilir
+    @State private var isPairingInProgress = false
     @Environment(\.dismiss) private var dismiss
 
     private var atvConnected: Bool { atv.isConnected }
@@ -37,9 +39,15 @@ struct RemoteView: View {
             NavigationStack {
                 PairingView(device: device) { success in
                     showPairing = false
+                    isPairingInProgress = false
+                    atv.setPairing(false)       // Fix 4: reconnect tekrar açılabilir
                     if success {
-                        // Yeni cert kaydedildi — ATV'ye yeniden bağlan
-                        Task { await initAtv() }
+                        Task {
+                            // Fix 5: TV pairing bağlantısını kapatıp remote port'u açıyor
+                            // 300ms bekle, race condition azalt
+                            try? await Task.sleep(for: .milliseconds(300))
+                            await initAtv()
+                        }
                     }
                 }
             }
@@ -231,9 +239,16 @@ struct RemoteView: View {
         // Cert invalid gelince: eski cert'i sil, pairing sheet aç
         atv.onCertInvalid = {
             Task { @MainActor in
+                // Fix 3: pairing lock — zaten açıksa ignore et
+                guard !self.isPairingInProgress else {
+                    self.addLog("ℹ️ Pairing zaten açık, ikinci tetiklenme yoksayıldı")
+                    return
+                }
                 self.addLog("🔐 Cert geçersiz — eski sertifika siliniyor, yeniden eşleştirme başlıyor")
                 KeychainHelper.deleteCertAndKey(certKey: self.device.certKey)
                 self.isReconnecting = false
+                self.isPairingInProgress = true
+                self.atv.setPairing(true)   // Fix 4: pairing sırasında reconnect blokla
                 self.showPairing = true
             }
         }
