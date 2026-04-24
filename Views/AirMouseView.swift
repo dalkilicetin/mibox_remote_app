@@ -44,14 +44,19 @@ struct AirMouseView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .bottom) {
+                Color.appBg.ignoresSafeArea()
                 VStack(spacing: 0) {
                     tabBar(geo: geo)
-                    if selectedTab == 0 {
-                        airMousePage(geo: geo)
-                    } else {
-                        calibrationPage(geo: geo)
+                    Group {
+                        if selectedTab == 0 {
+                            airMousePage(geo: geo)
+                        } else {
+                            calibrationPage(geo: geo)
+                        }
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 if kbdVisible {
                     KeyboardPopup(
                         text: $kbdText,
@@ -63,10 +68,10 @@ struct AirMouseView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color.appBg)
             .onAppear   { startSensors() }
             .onDisappear { stopSensors() }
         }
+        .ignoresSafeArea(edges: .bottom)
     }
 
     // MARK: - Tab bar
@@ -102,6 +107,7 @@ struct AirMouseView: View {
             keyboardButton(geo: geo)
             sensitivitySlider(geo: geo)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func debugBar(geo: GeometryProxy) -> some View {
