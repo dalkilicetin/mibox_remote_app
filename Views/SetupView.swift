@@ -1,5 +1,6 @@
 import SwiftUI
 import Network
+import Darwin
 
 struct SetupView: View {
     @StateObject private var discovery = DeviceDiscovery()
@@ -7,6 +8,10 @@ struct SetupView: View {
     @State private var showManualEntry = false
     @State private var manualIP = ""
     @State private var isAutoConnecting = false
+
+    // Fix: connection lock — race condition önleme
+    // cache connect ve scan result aynı anda destination set etmesin
+    private var connectionLock = ConnectionLock()
 
     enum NavDest: Identifiable, Hashable {
         case pairing(DiscoveredDevice)
@@ -66,8 +71,19 @@ struct SetupView: View {
                 }
             }
         }
-        .onAppear { Task { await tryAutoConnect() } }
-        .onDisappear { discovery.stop() }
+        .onAppear {
+            // Fix 4: network değişimini dinle
+            discovery.onNetworkChange = {
+                // Wi-Fi değişti — cache geçersiz, yeniden tara
+                Task { await tryAutoConnect() }
+            }
+            discovery.startMonitoringNetwork()
+            Task { await tryAutoConnect() }
+        }
+        .onDisappear {
+            discovery.stop()
+            discovery.stopMonitoringNetwork()
+        }
         .alert("Manuel IP Gir", isPresented: $showManualEntry) {
             TextField("192.168.x.x", text: $manualIP)
                 .keyboardType(.numbersAndPunctuation)
@@ -189,41 +205,72 @@ struct SetupView: View {
 
     // MARK: - Auto-connect
 
-    /// Uygulama açılışında: son bağlanılan cihaz varsa ve cert kaydedilmişse
-    /// discovery yapmadan direkt bağlanmayı dener.
+    /// Uygulama açılışında optimistic connect + parallel scan stratejisi:
+    ///
+    /// 1. IP + subnet mask ile gerçek network adresi karşılaştırılır (naif /24 prefix değil).
+    ///    Uyuşmuyorsa (farklı Wi-Fi / VPN) cache denenmez, anında scan başlar.
+    ///
+    /// 2. Subnet uyuşuyorsa paralel başlar:
+    ///    - Cache IP'ye 2.5sn TCP dene (TV wake-up için yeterli süre)
+    ///    - Arka planda scan sessizce çalışsın
+    ///
+    /// 3. ConnectionLock ile race condition önlenir:
+    ///    Cache kazanırsa scan result'ları yoksayılır, tersi de geçerli.
     private func tryAutoConnect() async {
         guard let savedIP = KeychainHelper.loadStr("mibox_ip"),
               !savedIP.isEmpty else {
-            // Hiç bağlanılmamış — normal scan başlat
             discovery.startScan(); return
         }
 
         let certKey = KeychainHelper.loadStr("mibox_certkey") ?? savedIP
         guard KeychainHelper.hasCert(certKey: certKey) else {
-            // Cert yok — eşleştirilmemiş cihaz, scan başlat
             discovery.startScan(); return
         }
 
+        // --- Fix 1: Subnet mask ile doğru network karşılaştırması ---
+        guard ipOnCurrentNetwork(savedIP) else {
+            // Farklı ağdayız — cache kesinlikle çalışmaz
+            discovery.startScan(); return
+        }
+
+        // --- Fix 2: Connection lock + parallel ---
+        await connectionLock.reset()
         isAutoConnecting = true
 
-        // TCP üzerinden cihazın hâlâ erişilebilir olduğunu kontrol et (1.5s timeout)
-        let reachable = await tcpCheck(ip: savedIP, port: 6466, timeout: 1.5)
-        guard reachable else {
-            // Cihaz erişilemez (farklı ağ, TV kapalı) — scan başlat
-            isAutoConnecting = false
-            discovery.startScan(); return
+        // Scan sessizce arka planda başlasın — device bulunca connectTo çağırır
+        // ama lock sayesinde cache zaten bağlandıysa yoksayılır
+        discovery.startScanSilent { [connectionLock] device in
+            Task { @MainActor in
+                guard await connectionLock.tryAcquire() else { return }
+                // Scan kazandı — cache connect artık yoksayılacak
+                self.isAutoConnecting = false
+                self.connectTo(device)
+            }
         }
 
-        // Cihaz erişilebilir — discovery atla, direkt bağlan
+        // Fix 3: 2.5sn timeout — TV sleep/wake için yeterli
+        let reachable = await tcpCheck(ip: savedIP, port: 6466, timeout: 2.5)
+
+        guard await connectionLock.tryAcquire() else {
+            // Scan zaten bir cihaz bulup lock'u aldı — cache sonucunu yoksay
+            isAutoConnecting = false
+            return
+        }
+
+        // Cache kazandı — scan'i durdur
+        discovery.stop()
         let pPort = KeychainHelper.loadInt(KeychainHelper.pairingPortKey(certKey: certKey), def: 6467)
         let rPort = KeychainHelper.loadInt(KeychainHelper.remotePortKey(certKey: certKey),  def: 6466)
-        var device = DiscoveredDevice(ip: savedIP, hasCert: true,
-                                      pairingPort: pPort, remotePort: rPort)
-        // certKey'i set et (MAC ise MAC, değilse IP)
-        if certKey != savedIP { device.mac = certKey }
-
         isAutoConnecting = false
-        launchRemote(device)
+
+        if reachable {
+            var device = DiscoveredDevice(ip: savedIP, hasCert: true,
+                                          pairingPort: pPort, remotePort: rPort)
+            if certKey != savedIP { device.mac = certKey }
+            launchRemote(device)
+        }
+        // reachable değilse: lock alındı ama bağlanamadık.
+        // scan stop edildi — kullanıcı "Cihaz bulunamadı" görür, manuel scan yapabilir.
     }
 
     private func connectManual() {
@@ -240,6 +287,47 @@ struct SetupView: View {
                                           pairingPort: pPort, remotePort: rPort)
             connectTo(device)
         }
+    }
+
+    /// IP + subnet mask ile gerçek network adresi hesaplayarak karşılaştırır.
+    /// /23, /22 gibi non-/24 subnet'leri ve VPN senaryolarını doğru yakalar.
+    private func ipOnCurrentNetwork(_ ip: String) -> Bool {
+        guard let targetAddr = ipToUInt32(ip) else { return false }
+
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0 else { return false }
+        defer { freeifaddrs(ifaddr) }
+
+        var ptr = ifaddr
+        while let ifa = ptr {
+            defer { ptr = ifa.pointee.ifa_next }
+            let flags = Int32(ifa.pointee.ifa_flags)
+            guard ifa.pointee.ifa_addr?.pointee.sa_family == UInt8(AF_INET),
+                  flags & IFF_LOOPBACK == 0,
+                  flags & IFF_UP != 0 else { continue }
+
+            var localAddr: UInt32 = 0
+            var mask: UInt32 = 0
+
+            ifa.pointee.ifa_addr?.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
+                localAddr = UInt32(bigEndian: $0.pointee.sin_addr.s_addr)
+            }
+            ifa.pointee.ifa_netmask?.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
+                mask = UInt32(bigEndian: $0.pointee.sin_addr.s_addr)
+            }
+
+            guard localAddr != 0, mask != 0 else { continue }
+
+            // Aynı network: (localAddr & mask) == (targetAddr & mask)
+            if (localAddr & mask) == (targetAddr & mask) { return true }
+        }
+        return false
+    }
+
+    private func ipToUInt32(_ ip: String) -> UInt32? {
+        var addr = in_addr()
+        guard inet_pton(AF_INET, ip, &addr) == 1 else { return nil }
+        return UInt32(bigEndian: addr.s_addr)
     }
 
     private func tcpCheck(ip: String, port: Int, timeout: Double = 2.0) async -> Bool {
@@ -260,6 +348,21 @@ struct SetupView: View {
             }
         }
     }
+}
+
+// MARK: - ConnectionLock
+// Race condition önlemek için: cache connect ve scan result
+// aynı anda destination set etmesin. İlk tryAcquire() true döner, sonrakiler false.
+// Swift actor ile isolation garantisi sağlanır — NSLock gerekmez.
+actor ConnectionLock {
+    private var acquired = false
+
+    func tryAcquire() -> Bool {
+        guard !acquired else { return false }
+        acquired = true; return true
+    }
+
+    func reset() { acquired = false }
 }
 
 // MARK: - DeviceCard
