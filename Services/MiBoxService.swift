@@ -10,8 +10,8 @@ import Darwin
 @MainActor
 final class MiBoxService: ObservableObject {
     static let cursorPort:    UInt16 = 9876
-    static let discoveryPort: UInt16 = 9877
-    static let discoveryMagic        = "AIRCURSOR_DISCOVER"
+    nonisolated static let discoveryPort: UInt16 = 9877
+    nonisolated static let discoveryMagic        = "AIRCURSOR_DISCOVER"
     static let screenW               = 1920
     static let screenH               = 1080
 
@@ -101,7 +101,7 @@ final class MiBoxService: ObservableObject {
     // ATV discovery'den bağımsız — sadece APK'yı bulur.
     // UDP broadcast + subnet tarama kombinasyonu.
 
-    static func discoverAPK(timeout: TimeInterval = 3.0) async -> [String] {
+    nonisolated static func discoverAPK(timeout: TimeInterval = 3.0) async -> [String] {
         await withCheckedContinuation { cont in
             var foundIPs: [String] = []
             var done = false
@@ -248,7 +248,7 @@ final class MiBoxService: ObservableObject {
 
     // MARK: - Broadcast addresses
 
-    static func broadcastAddresses() -> [String] {
+    nonisolated static func broadcastAddresses() -> [String] {
         var addrs: [String] = []
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddr) == 0 else { return ["255.255.255.255"] }
@@ -277,7 +277,7 @@ final class MiBoxService: ObservableObject {
         return addrs
     }
 
-    private static func subnetBroadcasts() -> [String] {
+    nonisolated private static func subnetBroadcasts() -> [String] {
         var results: [String] = []
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddr) == 0 else { return [] }

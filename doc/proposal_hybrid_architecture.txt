@@ -1,0 +1,56 @@
+HYBRID ARCHITECTURE - SMART TV REMOTE APP
+
+1.  GENERAL IDEA Flutter handles UI/UX. Native (Swift + Kotlin) handles
+    real-time system logic.
+
+2.  SYSTEM OVERVIEW
+
+Flutter Layer: - UI (buttons, touchpad, device list) - user
+interactions - state display
+
+Native Layer: - device discovery (mDNS/SSDP) - pairing (TLS on port
+6467) - remote control socket - airmouse / sensors - keepalive /
+reconnect logic
+
+3.  ARCHITECTURE
+
+Flutter UI | v Platform Channel (bridge) | v Native Core Engine -
+Connection Manager - Pairing Service - Remote Service - Input Engine -
+Sensor Engine - Certificate Store
+
+4.  INPUT FLOW
+
+User Tap (Flutter) -> Flutter UI -> Platform Channel -> Native Input
+Engine -> KeyEvent DOWN -> delay -> KeyEvent UP -> TV
+
+5.  AIRMOUSE FLOW
+
+Sensor Data (Native) -> filtering + smoothing (Native) -> pointer delta
+calculation -> send to TV directly
+
+6.  PAIRING FLOW
+
+Flutter “Connect” -> Native Pairing Service -> TLS handshake ->
+certificate exchange -> store cert securely -> return success
+
+7.  CONNECTION STATES
+
+IDLE -> DISCOVERING -> PAIRING -> CONNECTING -> AUTHENTICATING -> READY
+-> DISCONNECTED
+
+8.  RECONNECT STRATEGY
+
+Native detects drop -> auto reconnect -> Flutter only updates UI
+
+9.  WHY HYBRID?
+
+Flutter alone: - weak for low latency - limited sensor control -
+background limitations
+
+Native alone: - heavy UI development - slower iteration
+
+Hybrid: - best of both worlds
+
+10. KEY PRINCIPLE
+
+UI = Flutter Real-time system = Native
