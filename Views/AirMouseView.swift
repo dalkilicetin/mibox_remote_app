@@ -5,73 +5,116 @@ struct AirMouseView: View {
     let apk: MiBoxService
     let atv: AtvRemoteService
 
-    @State private var airOn     = false
-    @State private var debugText = "Hazır"
+    @State private var airOn         = false
+    @State private var debugText     = "Hazır"
     @State private var sensitivity: Double = 25
-    @State private var kbdVisible = false
-    @State private var kbdText   = ""
+    @State private var kbdVisible    = false
+    @State private var kbdText       = ""
     @State private var swipeCooldown = false
+    @State private var selectedTab   = 0   // 0=Air, 1=Kalibrasyon
 
-    // Filter state
-    @State private var fbeta = 0.0
-    @State private var filterInit = false
-    @State private var lastRawAlpha = 0.0
-    @State private var filteredDa   = 0.0
-    @State private var lastAlphaInit = false
-    @State private var lastBeta  = 0.0
-    @State private var lastTime  = Date()
-    @State private var rawAlpha  = 0.0
-    @State private var rawBeta   = 0.0
+    // Kalibrasyon
+    @State private var activePtId: Int? = nil
+
+    // Son işlenmiş delta — kalibrasyon kaydetmek için
+    @State private var lastProcessedDb: Double = 0
+    @State private var lastProcessedDa: Double = 0
+
+    // Sensor raw values
+    @State private var rawBeta:  Double = 0
+    @State private var rawAlpha: Double = 0
+    @State private var lastTime: Date   = Date()
 
     // Tap tracking
-    @State private var tapStart  = CGPoint.zero
-    @State private var tapLast   = CGPoint.zero
-    @State private var tapTime   = Date()
-    @State private var tapAccumV = 0.0
-    @State private var tapAccumH = 0.0
+    @State private var tapStart   = CGPoint.zero
+    @State private var tapLast    = CGPoint.zero
+    @State private var tapTime    = Date()
+    @State private var tapAccumV  = 0.0
+    @State private var tapAccumH  = 0.0
     @State private var swipeAccum = 0.0
 
     private let motion = CMMotionManager()
-    // NOT: CMMotionManager `let` olarak tanımlı ama class olduğu için referans tutulur.
-    // SwiftUI struct yeniden oluşturulsa da aynı instance kullanılmaya devam eder
-    // çünkü SwiftUI property storage'ı korur.
-    private static let LP = 0.5
+    private let engine = InputEngine()
+
     private static let TAP_MAX_MOVE: Double = 12
     private static let TAP_MAX_MS   = 250
     private static let SCROLL_THRESH: Double = 65
     private static let SWIPE_THRESH:  Double = 40
 
+    private let calibLabels = [
+        "Sol Üst",  "Orta Üst", "Sağ Üst",
+        "Sol Orta", "Merkez",   "Sağ Orta",
+        "Sol Alt",  "Orta Alt", "Sağ Alt"
+    ]
+
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .bottom) {
                 VStack(spacing: 0) {
-                    debugBar(geo: geo)
-                    toggleButton(geo: geo)
-                    mainArea(geo: geo)
-                    actionButtons(geo: geo)
-                    keyboardButton(geo: geo)
-                    sensitivitySlider(geo: geo)
+                    tabBar(geo: geo)
+                    if selectedTab == 0 {
+                        airMousePage(geo: geo)
+                    } else {
+                        calibrationPage(geo: geo)
+                    }
                 }
                 if kbdVisible {
-                    KeyboardPopup(text: $kbdText, isVisible: $kbdVisible,
-                                  onSend: sendText,
-                                  onBackspace: { apk.sendKey(67) },
-                                  onEnter: { apk.sendKey(66) })
+                    KeyboardPopup(
+                        text: $kbdText,
+                        isVisible: $kbdVisible,
+                        onSend: sendText,
+                        onBackspace: { apk.sendKey(67) },
+                        onEnter:     { apk.sendKey(66) }
+                    )
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.appBg)
-            .onAppear  { startSensors() }
+            .onAppear   { startSensors() }
             .onDisappear { stopSensors() }
         }
     }
 
-    // MARK: - Sub-views
+    // MARK: - Tab bar
+
+    private func tabBar(geo: GeometryProxy) -> some View {
+        HStack(spacing: 0) {
+            ForEach(Array(["Air Mouse", "Kalibrasyon"].enumerated()), id: \.offset) { idx, name in
+                Button(action: { selectedTab = idx }) {
+                    VStack(spacing: 4) {
+                        Text(name)
+                            .font(.system(size: geo.size.width * 0.032))
+                            .foregroundColor(selectedTab == idx ? .redAccent : .gray)
+                        Rectangle()
+                            .fill(selectedTab == idx ? Color.redAccent : .clear)
+                            .frame(height: 2)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .padding(.top, 4)
+        .background(Color.cardBg)
+    }
+
+    // MARK: - Air Mouse Page
+
+    private func airMousePage(geo: GeometryProxy) -> some View {
+        VStack(spacing: 0) {
+            debugBar(geo: geo)
+            toggleButton(geo: geo)
+            mainArea(geo: geo)
+            actionButtons(geo: geo)
+            keyboardButton(geo: geo)
+            sensitivitySlider(geo: geo)
+        }
+    }
 
     private func debugBar(geo: GeometryProxy) -> some View {
-        let sensorStatus = motion.isAccelerometerActive ? "ACC✓" : "ACC✗"
-        let magStatus = motion.isMagnetometerActive ? "MAG✓" : "MAG✗"
-        return Text("\(sensorStatus) \(magStatus) | \(debugText)")
+        let calibStatus = engine.calibration.isReady
+            ? "CAL:\(engine.calibration.pointCount)/9"
+            : "DELTA"
+        return Text("\(debugText) [\(calibStatus)]")
             .font(.system(size: geo.size.width * 0.028, design: .monospaced))
             .foregroundColor(.greenOk)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -117,7 +160,7 @@ struct AirMouseView: View {
                 .onChanged { v in
                     if tapLast == .zero {
                         tapStart = v.location; tapLast = v.location
-                        tapTime  = Date(); tapAccumV = 0; tapAccumH = 0
+                        tapTime = Date(); tapAccumV = 0; tapAccumH = 0
                     }
                     let dx = v.location.x - tapLast.x
                     let dy = v.location.y - tapLast.y
@@ -136,8 +179,12 @@ struct AirMouseView: View {
                     let moved = hypot(tapLast.x - tapStart.x, tapLast.y - tapStart.y)
                     let ms    = Int(Date().timeIntervalSince(tapTime) * 1000)
                     if moved < Self.TAP_MAX_MOVE && ms < Self.TAP_MAX_MS {
-                        if airOn { apk.tap(); if atv.isConnected { atv.sendKey(AtvKey.dpadCenter) } }
-                        else { sendKey(AtvKey.dpadCenter) }
+                        if airOn {
+                            apk.tap()
+                            if atv.isConnected { atv.sendKey(AtvKey.dpadCenter) }
+                        } else {
+                            sendKey(AtvKey.dpadCenter)
+                        }
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                     }
                     tapLast = .zero; tapAccumV = 0; tapAccumH = 0
@@ -161,23 +208,26 @@ struct AirMouseView: View {
         .background(Color(hex: "0d1117"))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.blueDeep, lineWidth: 2))
         .cornerRadius(16)
-        .gesture(DragGesture().onChanged { v in
-            swipeAccum += v.translation.height
-            if abs(swipeAccum) >= Self.SWIPE_THRESH {
-                sendSwipe(swipeAccum > 0 ? -1 : 1); swipeAccum = 0
+        .gesture(DragGesture()
+            .onChanged { v in
+                swipeAccum += v.translation.height
+                if abs(swipeAccum) >= Self.SWIPE_THRESH {
+                    sendSwipe(swipeAccum > 0 ? -1 : 1); swipeAccum = 0
+                }
             }
-        }.onEnded { _ in swipeAccum = 0 })
+            .onEnded { _ in swipeAccum = 0 }
+        )
     }
 
     private func actionButtons(geo: GeometryProxy) -> some View {
         VStack(spacing: geo.size.height * 0.008) {
             HStack(spacing: geo.size.width * 0.02) {
-                airBtn(icon: "arrow.backward", label: "Geri",  geo: geo) { sendKey(AtvKey.back) }
-                airBtn(icon: "house",          label: "Home",  geo: geo) { sendKey(AtvKey.home) }
+                airBtn(icon: "arrow.backward", label: "Geri", geo: geo) { sendKey(AtvKey.back) }
+                airBtn(icon: "house",          label: "Home", geo: geo) { sendKey(AtvKey.home) }
             }
             HStack(spacing: geo.size.width * 0.02) {
-                airBtn(icon: "speaker.plus",   label: "Ses+",  geo: geo) { sendKey(AtvKey.volumeUp) }
-                airBtn(icon: "speaker.minus",  label: "Ses-",  geo: geo) { sendKey(AtvKey.volumeDown) }
+                airBtn(icon: "speaker.plus",  label: "Ses+", geo: geo) { sendKey(AtvKey.volumeUp) }
+                airBtn(icon: "speaker.minus", label: "Ses-", geo: geo) { sendKey(AtvKey.volumeDown) }
             }
         }
         .padding(.horizontal, geo.size.width * 0.03)
@@ -199,12 +249,10 @@ struct AirMouseView: View {
         VStack(spacing: 4) {
             HStack {
                 Text("Hassasiyet")
-                    .font(.system(size: geo.size.width * 0.03))
-                    .foregroundColor(.gray)
+                    .font(.system(size: geo.size.width * 0.03)).foregroundColor(.gray)
                 Spacer()
                 Text("\(Int(sensitivity))")
-                    .font(.system(size: geo.size.width * 0.03, weight: .bold))
-                    .foregroundColor(.redAccent)
+                    .font(.system(size: geo.size.width * 0.03, weight: .bold)).foregroundColor(.redAccent)
             }
             Slider(value: $sensitivity, in: 5...150).tint(.redAccent)
         }
@@ -230,25 +278,132 @@ struct AirMouseView: View {
         }
     }
 
+    // MARK: - Calibration Page
+
+    private func calibrationPage(geo: GeometryProxy) -> some View {
+        VStack(spacing: geo.size.height * 0.015) {
+            Text(activePtId == nil
+                 ? "1. Nokta seç  2. Touchpad ile cursoru götür  3. Kaydet"
+                 : "'\(calibLabels[activePtId!])': cursoru götür → Kaydet bas")
+                .font(.system(size: geo.size.width * 0.03))
+                .foregroundColor(.gray)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, geo.size.width * 0.04)
+                .padding(.top, geo.size.height * 0.02)
+
+            Text("Kalibrasyon: \(engine.calibration.pointCount)/9 \(engine.calibration.isReady ? "✓ Hazır" : "– Eksik")")
+                .font(.system(size: geo.size.width * 0.032, weight: .semibold))
+                .foregroundColor(engine.calibration.isReady ? .greenOk : Color(hex: "fbbf24"))
+
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3),
+                spacing: 8
+            ) {
+                ForEach(0..<9, id: \.self) { id in
+                    calibDot(id: id, geo: geo)
+                }
+            }
+            .padding(.horizontal, geo.size.width * 0.04)
+
+            Button(action: saveCalibPoint) {
+                VStack(spacing: 4) {
+                    Text("Kaydet").font(.system(size: geo.size.width * 0.05, weight: .bold))
+                    Text(activePtId != nil ? calibLabels[activePtId!] : "Önce nokta seç")
+                        .font(.system(size: geo.size.width * 0.03))
+                }
+                .foregroundColor(activePtId != nil ? .white : Color(hex: "666666"))
+                .frame(maxWidth: .infinity)
+                .frame(height: geo.size.height * 0.12)
+                .background(activePtId != nil ? Color.redAccent : Color(hex: "333333"))
+                .cornerRadius(20)
+            }
+            .disabled(activePtId == nil)
+            .padding(.horizontal, geo.size.width * 0.04)
+
+            Button(action: {
+                engine.calibration.reset()
+                activePtId = nil
+            }) {
+                Text("Kalibrasyonu Sıfırla")
+                    .font(.system(size: geo.size.width * 0.032))
+                    .foregroundColor(.gray)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, geo.size.height * 0.015)
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray.opacity(0.4)))
+            }
+            .padding(.horizontal, geo.size.width * 0.04)
+
+            Spacer()
+        }
+    }
+
+    private func calibDot(id: Int, geo: GeometryProxy) -> some View {
+        let isSaved  = engine.calibration.points.contains { $0.id == id }
+        let isActive = activePtId == id
+        let parts    = calibLabels[id].components(separatedBy: " ")
+
+        return Button(action: { activePtId = id }) {
+            VStack(spacing: 3) {
+                Text(parts.first ?? "").font(.system(size: geo.size.width * 0.03, weight: .semibold))
+                Text(parts.dropFirst().joined(separator: " ")).font(.system(size: geo.size.width * 0.025))
+                if isSaved {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: geo.size.width * 0.035))
+                }
+            }
+            .foregroundColor(isActive ? .redAccent : isSaved ? .greenOk : .gray)
+            .frame(maxWidth: .infinity)
+            .frame(height: geo.size.height * 0.1)
+            .background(Color(hex: "0d1117"))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(
+                        isActive ? Color.redAccent : isSaved ? Color.greenOk : Color.blueDeep,
+                        lineWidth: 1.5
+                    )
+            )
+            .cornerRadius(12)
+        }
+    }
+
+    private func saveCalibPoint() {
+        guard let id = activePtId else { return }
+        let point = CalibPoint(
+            id: id,
+            db: lastProcessedDb,
+            da: lastProcessedDa,
+            cx: Double(apk.cursorX),
+            cy: Double(apk.cursorY)
+        )
+        engine.calibration.addPoint(point)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        // Otomatik sonraki noktaya geç
+        activePtId = (id + 1) % 9
+    }
+
     // MARK: - Sensors
 
     private func startSensors() {
-        // Önceki oturumdan kalan updates'i temizle
         motion.stopAccelerometerUpdates()
         motion.stopMagnetometerUpdates()
-        // Filter state'i sıfırla — eski değerlerle cursor zıplamasın
-        filterInit = false; lastAlphaInit = false; filteredDa = 0
+        engine.reset()
+        engine.screenW = Double(apk.screenW)
+        engine.screenH = Double(apk.screenH)
 
         if motion.isAccelerometerAvailable {
-            motion.accelerometerUpdateInterval = 1.0/60
+            motion.accelerometerUpdateInterval = 1.0 / 60
             motion.startAccelerometerUpdates(to: .main) { data, _ in
                 guard let d = data else { return }
-                rawBeta = atan2(d.acceleration.y, sqrt(d.acceleration.x*d.acceleration.x + d.acceleration.z*d.acceleration.z)) * 180 / .pi
-                onGyro()
+                rawBeta = atan2(
+                    d.acceleration.y,
+                    sqrt(d.acceleration.x * d.acceleration.x + d.acceleration.z * d.acceleration.z)
+                ) * 180 / .pi
+                onSensorUpdate()
             }
         }
+
         if motion.isMagnetometerAvailable {
-            motion.magnetometerUpdateInterval = 1.0/60
+            motion.magnetometerUpdateInterval = 1.0 / 60
             motion.startMagnetometerUpdates(to: .main) { data, _ in
                 guard let d = data else { return }
                 var a = atan2(d.magneticField.y, d.magneticField.x) * 180 / .pi
@@ -263,49 +418,42 @@ struct AirMouseView: View {
         motion.stopMagnetometerUpdates()
     }
 
-    private func onGyro() {
-        if !filterInit { fbeta = rawBeta; filterInit = true }
-        fbeta = Self.LP * rawBeta + (1 - Self.LP) * fbeta
+    private func onSensorUpdate() {
+        let now = Date()
+        let dt  = now.timeIntervalSince(lastTime)
+        guard dt >= 0.016 else { return }   // 60Hz rate limit
+        lastTime = now
 
         if !airOn {
-            debugText = "pitch:\(String(format:"%.1f",fbeta)) yaw:\(String(format:"%.1f",rawAlpha))"
-            lastBeta = fbeta; lastRawAlpha = rawAlpha; lastAlphaInit = true
+            debugText = "pitch:\(String(format:"%.1f", rawBeta)) yaw:\(String(format:"%.1f", rawAlpha))"
+            engine.reset()   // airOn açılınca sıçrama olmasın
             return
         }
 
-        let now = Date()
-        guard now.timeIntervalSince(lastTime) * 1000 >= 16, lastAlphaInit else {
-            lastBeta = fbeta; lastRawAlpha = rawAlpha; lastAlphaInit = true; return
-        }
+        guard let (dx, dy) = engine.process(
+            beta: rawBeta,
+            alpha: rawAlpha,
+            dt: dt,
+            sensitivity: sensitivity
+        ) else { return }
 
-        var db = fbeta - lastBeta
-        if db > 90 { db -= 180 }; if db < -90 { db += 180 }
+        // Kalibrasyon için son işlenmiş raw değerleri sakla
+        lastProcessedDb = rawBeta
+        lastProcessedDa = rawAlpha
 
-        var rawDa = lastRawAlpha - rawAlpha
-        if rawDa > 180 { rawDa -= 360 }; if rawDa < -180 { rawDa += 360 }
-        filteredDa = Self.LP * rawDa + (1 - Self.LP) * filteredDa
-        var da = filteredDa
+        apk.moveCursor(dx: dx, dy: dy)
 
-        if abs(db) < 0.3 { db = 0 }
-        if abs(da) < 0.05 { da = 0 }
+        // Edge reset
+        engine.onCursorUpdate(x: Double(apk.cursorX), y: Double(apk.cursorY))
 
-        if db != 0 || da != 0 {
-            let speed = sqrt(db*db + da*da)
-            let boost = speed > 3 ? 1.0 + (speed - 3) * 0.3 : 1.0
-            let dx = Int((da * boost * 25).rounded())
-            let dy = Int((db * sensitivity/25 * boost * -25).rounded())
-            if dx != 0 || dy != 0 { apk.moveCursor(dx: dx, dy: dy) }
-            debugText = "pitch:\(String(format:"%.2f",db)) yaw:\(String(format:"%.2f",da))"
-        }
-
-        lastBeta = fbeta; lastRawAlpha = rawAlpha; lastAlphaInit = true; lastTime = now
+        debugText = "dx:\(dx) dy:\(dy) \(engine.calibration.isReady ? "[MAP]" : "[DELTA]")"
     }
 
     // MARK: - Actions
 
     private func toggleAir() {
         airOn.toggle()
-        filterInit = false; lastAlphaInit = false; filteredDa = 0
+        engine.reset()
         Task {
             try? await Task.sleep(for: .milliseconds(300))
             if airOn { apk.showCursor() } else { apk.hideCursor() }
