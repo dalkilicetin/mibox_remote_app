@@ -82,6 +82,8 @@ jobs:
             -project MiBoxRemote.xcodeproj \
             -scheme MiBoxRemote \
             -configuration Release \
+            -sdk iphonesimulator \
+            -destination "generic/platform=iOS Simulator" \
             -derivedDataPath ./build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
@@ -105,10 +107,10 @@ jobs:
 
       - name: IPA oluştur
         run: |
-          APP=$(find build -name "MiBoxRemote.app" -type d | head -1)
+          # Simulator build — Release-iphonesimulator altında üretilir
+          APP=$(find build -name "MiBoxRemote.app" -type d | grep -v "\.app/" | head -1)
           if [ -z "$APP" ]; then
             echo "HATA: MiBoxRemote.app bulunamadı"
-            echo "=== Mevcut .app dosyaları ==="
             find build -name "*.app" -type d 2>/dev/null || true
             exit 1
           fi
