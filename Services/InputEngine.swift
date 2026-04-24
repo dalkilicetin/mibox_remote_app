@@ -4,54 +4,27 @@ import Foundation
 
 struct CalibPoint: Codable {
     let id: Int
-    let db: Double   // gyro pitch delta (bu pozisyondaki ölçüm)
-    let da: Double   // gyro yaw delta
-    let cx: Double   // karşılık gelen ekran X
-    let cy: Double   // karşılık gelen ekran Y
-}
-
-// MARK: - GyroProcessor
-// Beta ve alpha AYRI frekanslarda geldiği için ayrı track edilir.
-// process() her accelerometer update'inde çağrılır — o anki rawAlpha dışarıdan verilir.
-
-final class GyroProcessor {
-    private var lastBeta:  Double?
-    private var lastAlpha: Double?
-
-    func reset() { lastBeta = nil; lastAlpha = nil }
-
-    func process(beta: Double, alpha: Double) -> (db: Double, da: Double)? {
-        guard let lb = lastBeta, let la = lastAlpha else {
-            lastBeta = beta; lastAlpha = alpha; return nil
-        }
-
-        var db = beta - lb
-        var da = alpha - la
-
-        // Pitch wrap
-        if db >  90 { db -= 180 }
-        if db < -90 { db += 180 }
-
-        // Yaw wrap
-        if da >  180 { da -= 360 }
-        if da < -180 { da += 360 }
-
-        lastBeta  = beta
-        lastAlpha = alpha
-        return (db, da)
-    }
+    let db: Double   // pipeline'dan geçmiş accDb
+    let da: Double   // pipeline'dan geçmiş accDa
+    let cx: Double   // ekran X
+    let cy: Double   // ekran Y
 }
 
 // MARK: - MotionFilter
-// alpha=0.5: bridge değeri — dengeli tepki/smooth
-// 0.8 olursa cursor geride kalır ("kayıyor" hissi)
+// alpha=0.3: daha responsive — 0.5 cursor lag yaratıyordu
 
 final class MotionFilter {
     private var smoothB: Double = 0
     private var smoothA: Double = 0
-    let alpha: Double = 0.5
+    let alpha: Double = 0.3
 
     func reset() { smoothB = 0; smoothA = 0 }
+
+    // Decay: ani reset yerine yumuşak düşüş (edge snap önleme)
+    func decay(factor: Double = 0.7) {
+        smoothB *= factor
+        smoothA *= factor
+    }
 
     func apply(db: Double, da: Double) -> (Double, Double) {
         smoothB = alpha * smoothB + (1 - alpha) * db
@@ -61,6 +34,7 @@ final class MotionFilter {
 }
 
 // MARK: - Dead zone
+// Eşitlenmiş threshold — yatay/dikey dengeli
 
 func applyDeadZone(_ v: Double, threshold: Double) -> Double {
     abs(v) < threshold ? 0 : v
@@ -76,8 +50,20 @@ func applyAcceleration(db: Double, da: Double) -> (Double, Double) {
 }
 
 // MARK: - DeltaTime normalization
-// 60Hz baz: dt=16ms→1.0, dt=8ms→0.5, dt=32ms→2.0
-// max 3x — ani spike koruması
+// 60Hz baz, max 3x spike koruması + moving average (jitter önleme)
+
+final class DtSmoother {
+    private var samples: [Double] = []
+    private let maxSamples = 4
+
+    func smooth(_ dt: Double) -> Double {
+        samples.append(dt)
+        if samples.count > maxSamples { samples.removeFirst() }
+        return samples.reduce(0, +) / Double(samples.count)
+    }
+
+    func reset() { samples.removeAll() }
+}
 
 func normalizeDt(db: Double, da: Double, dt: Double) -> (Double, Double) {
     let factor = min(dt * 60.0, 3.0)
@@ -85,15 +71,22 @@ func normalizeDt(db: Double, da: Double, dt: Double) -> (Double, Double) {
 }
 
 // MARK: - CalibrationEngine
-// Bridge'deki map_to_screen() — IDW interpolasyon
-// 9 nokta (3x3 grid), en yakın 4 nokta ağırlıklı ortalama
+// IDW interpolasyon + screen bounds clamp + output smoothing
 
 final class CalibrationEngine {
     private(set) var points: [CalibPoint] = []
     private let storageKey = "airmouse_calib_v1"
 
+    // Output smoothing — mapping sonrası jitter azalt
+    private var smoothX: Double = 960
+    private var smoothY: Double = 540
+    private let smoothAlpha: Double = 0.4
+
     var isReady: Bool { points.count >= 4 }
     var pointCount: Int { points.count }
+
+    var screenW: Double = 1920
+    var screenH: Double = 1080
 
     init() { load() }
 
@@ -105,6 +98,7 @@ final class CalibrationEngine {
 
     func reset() {
         points.removeAll()
+        smoothX = 960; smoothY = 540
         UserDefaults.standard.removeObject(forKey: storageKey)
     }
 
@@ -124,7 +118,16 @@ final class CalibrationEngine {
             ySum += w * p.cy
             wSum += w
         }
-        return (xSum / wSum, ySum / wSum)
+
+        // Screen bounds clamp — edge extrapolation bozulmasın
+        let rawX = max(0, min(screenW, xSum / wSum))
+        let rawY = max(0, min(screenH, ySum / wSum))
+
+        // Output smoothing — mapping sonrası jitter
+        smoothX = smoothAlpha * smoothX + (1 - smoothAlpha) * rawX
+        smoothY = smoothAlpha * smoothY + (1 - smoothAlpha) * rawY
+
+        return (smoothX, smoothY)
     }
 
     private func distSq(_ p: CalibPoint, db: Double, da: Double) -> Double {
@@ -148,23 +151,34 @@ final class CalibrationEngine {
 // MARK: - InputEngine (full pipeline)
 
 final class InputEngine {
-    let gyro        = GyroProcessor()
     let filter      = MotionFilter()
     let calibration = CalibrationEngine()
+    let dtSmoother  = DtSmoother()
+
+    // Fix 1: Calibration için doğru delta — accDb/accDa expose et
+    private(set) var lastAccDb: Double = 0
+    private(set) var lastAccDa: Double = 0
+
+    // Gyro state — CMDeviceMotion kullanıldığı için basit last value track
+    private var lastBeta:  Double? = nil
+    private var lastAlpha: Double? = nil
 
     var lastCursorX: Double = 960
     var lastCursorY: Double = 540
-    var screenW: Double = 1920
-    var screenH: Double = 1080
+    var screenW: Double = 1920 { didSet { calibration.screenW = screenW } }
+    var screenH: Double = 1080 { didSet { calibration.screenH = screenH } }
 
     private let edgeMargin: Double = 20
 
     func reset() {
-        gyro.reset()
+        lastBeta = nil; lastAlpha = nil
         filter.reset()
+        dtSmoother.reset()
+        lastAccDb = 0; lastAccDa = 0
     }
 
-    /// Tam pipeline — döndürür (dx, dy) veya nil (hareket yok)
+    /// Tam pipeline
+    /// beta/alpha: CMDeviceMotion'dan gelen attitude değerleri (°)
     func process(
         beta: Double,
         alpha: Double,
@@ -172,22 +186,36 @@ final class InputEngine {
         sensitivity: Double
     ) -> (dx: Int, dy: Int)? {
 
-        // 1. Raw gyro → delta + wrap fix
-        guard let (rawDb, rawDa) = gyro.process(beta: beta, alpha: alpha) else { return nil }
+        // 1. Delta hesapla + wrap fix
+        guard let lb = lastBeta, let la = lastAlpha else {
+            lastBeta = beta; lastAlpha = alpha; return nil
+        }
+        var rawDb = beta  - lb
+        var rawDa = alpha - la
 
-        // 2. Low-pass filter
+        if rawDb >  90 { rawDb -= 180 }; if rawDb < -90 { rawDb += 180 }
+        if rawDa > 180 { rawDa -= 360 }; if rawDa < -180 { rawDa += 360 }
+
+        lastBeta = beta; lastAlpha = alpha
+
+        // 2. Low-pass filter (alpha=0.3)
         let (filtDb, filtDa) = filter.apply(db: rawDb, da: rawDa)
 
-        // 3. Dead zone
-        let db = applyDeadZone(filtDb, threshold: 0.3)
-        let da = applyDeadZone(filtDa, threshold: 0.05)
+        // 3. Dead zone — eşitlenmiş threshold (0.12)
+        let db = applyDeadZone(filtDb, threshold: 0.12)
+        let da = applyDeadZone(filtDa, threshold: 0.12)
         guard db != 0 || da != 0 else { return nil }
 
-        // 4. DeltaTime normalization
-        let (normDb, normDa) = normalizeDt(db: db, da: da, dt: dt)
+        // 4. DeltaTime normalization (dt smoothed)
+        let smoothedDt = dtSmoother.smooth(dt)
+        let (normDb, normDa) = normalizeDt(db: db, da: da, dt: smoothedDt)
 
         // 5. Acceleration curve
         let (accDb, accDa) = applyAcceleration(db: normDb, da: normDa)
+
+        // Fix 1: pipeline sonrası değerleri sakla — calibration bunu kullanır
+        lastAccDb = accDb
+        lastAccDa = accDa
 
         // 6. Calibration map veya delta fallback
         if calibration.isReady,
@@ -202,11 +230,11 @@ final class InputEngine {
         }
     }
 
-    /// Bridge'deki onCursorPos() — edge'e gelince filter state sıfırla
+    /// Edge'e gelince decay (ani reset yerine yumuşak düşüş)
     func onCursorUpdate(x: Double, y: Double) {
         lastCursorX = x
         lastCursorY = y
-        if x >= screenW - edgeMargin || x <= edgeMargin { filter.reset() }
-        if y >= screenH - edgeMargin || y <= edgeMargin { gyro.reset() }
+        if x >= screenW - edgeMargin || x <= edgeMargin { filter.decay() }
+        if y >= screenH - edgeMargin || y <= edgeMargin { filter.decay() }
     }
 }

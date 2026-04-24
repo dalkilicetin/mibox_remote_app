@@ -16,14 +16,8 @@ struct AirMouseView: View {
     // Kalibrasyon
     @State private var activePtId: Int? = nil
 
-    // Son işlenmiş delta — kalibrasyon kaydetmek için
-    @State private var lastProcessedDb: Double = 0
-    @State private var lastProcessedDa: Double = 0
-
-    // Sensor raw values
-    @State private var rawBeta:  Double = 0
-    @State private var rawAlpha: Double = 0
-    @State private var lastTime: Date   = Date()
+    // Sensor timing
+    @State private var lastTime: Date = Date()
 
     // Tap tracking
     @State private var tapStart   = CGPoint.zero
@@ -368,82 +362,66 @@ struct AirMouseView: View {
 
     private func saveCalibPoint() {
         guard let id = activePtId else { return }
+        // Fix 1: pipeline'dan geçmiş accDb/accDa — mutlak açı değil
         let point = CalibPoint(
             id: id,
-            db: lastProcessedDb,
-            da: lastProcessedDa,
+            db: engine.lastAccDb,
+            da: engine.lastAccDa,
             cx: Double(apk.cursorX),
             cy: Double(apk.cursorY)
         )
         engine.calibration.addPoint(point)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        // Otomatik sonraki noktaya geç
         activePtId = (id + 1) % 9
     }
 
     // MARK: - Sensors
+    // Fix 2: CMDeviceMotion — Apple'ın sensor fusion, sync ve tutarlı
 
     private func startSensors() {
-        motion.stopAccelerometerUpdates()
-        motion.stopMagnetometerUpdates()
+        motion.stopDeviceMotionUpdates()
         engine.reset()
         engine.screenW = Double(apk.screenW)
         engine.screenH = Double(apk.screenH)
 
-        if motion.isAccelerometerAvailable {
-            motion.accelerometerUpdateInterval = 1.0 / 60
-            motion.startAccelerometerUpdates(to: .main) { data, _ in
-                guard let d = data else { return }
-                rawBeta = atan2(
-                    d.acceleration.y,
-                    sqrt(d.acceleration.x * d.acceleration.x + d.acceleration.z * d.acceleration.z)
-                ) * 180 / .pi
-                onSensorUpdate()
-            }
-        }
-
-        if motion.isMagnetometerAvailable {
-            motion.magnetometerUpdateInterval = 1.0 / 60
-            motion.startMagnetometerUpdates(to: .main) { data, _ in
-                guard let d = data else { return }
-                var a = atan2(d.magneticField.y, d.magneticField.x) * 180 / .pi
-                if a < 0 { a += 360 }
-                rawAlpha = a
-            }
+        guard motion.isDeviceMotionAvailable else { return }
+        motion.deviceMotionUpdateInterval = 1.0 / 60
+        motion.startDeviceMotionUpdates(
+            using: .xMagneticNorthZVertical,
+            to: .main
+        ) { data, _ in
+            guard let d = data else { return }
+            // attitude.pitch → dikey (beta), attitude.yaw → yatay (alpha)
+            let beta  = d.attitude.pitch * 180 / .pi
+            let alpha = d.attitude.yaw   * 180 / .pi
+            onSensorUpdate(beta: beta, alpha: alpha)
         }
     }
 
     private func stopSensors() {
-        motion.stopAccelerometerUpdates()
-        motion.stopMagnetometerUpdates()
+        motion.stopDeviceMotionUpdates()
     }
 
-    private func onSensorUpdate() {
+    private func onSensorUpdate(beta: Double, alpha: Double) {
         let now = Date()
         let dt  = now.timeIntervalSince(lastTime)
-        guard dt >= 0.016 else { return }   // 60Hz rate limit
+        guard dt >= 0.016 else { return }
         lastTime = now
 
         if !airOn {
-            debugText = "pitch:\(String(format:"%.1f", rawBeta)) yaw:\(String(format:"%.1f", rawAlpha))"
-            engine.reset()   // airOn açılınca sıçrama olmasın
+            debugText = "pitch:\(String(format:"%.1f", beta)) yaw:\(String(format:"%.1f", alpha))"
+            engine.reset()
             return
         }
 
         guard let (dx, dy) = engine.process(
-            beta: rawBeta,
-            alpha: rawAlpha,
+            beta: beta,
+            alpha: alpha,
             dt: dt,
             sensitivity: sensitivity
         ) else { return }
 
-        // Kalibrasyon için son işlenmiş raw değerleri sakla
-        lastProcessedDb = rawBeta
-        lastProcessedDa = rawAlpha
-
         apk.moveCursor(dx: dx, dy: dy)
-
-        // Edge reset
         engine.onCursorUpdate(x: Double(apk.cursorX), y: Double(apk.cursorY))
 
         debugText = "dx:\(dx) dy:\(dy) \(engine.calibration.isReady ? "[MAP]" : "[DELTA]")"
