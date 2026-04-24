@@ -4,57 +4,77 @@ import Network
 
 struct RemoteView: View {
     let device: DiscoveredDevice
-    let apkService: MiBoxService?
+    let apkService: MiBoxService?   // SetupView'dan gelebilir, nil de olabilir — önemli değil
 
     @StateObject private var atv = AtvRemoteService()
+    @StateObject private var apk = MiBoxService()   // Her zaman kendi APK servisi var
+
     @State private var atvConnected = false
     @State private var apkConnected = false
     @State private var logs: [String] = []
     @State private var selectedTab = 0
     @State private var isReconnecting = false
-    @State private var apkRetried = false
     @Environment(\.dismiss) private var dismiss
 
-    private var hasApk: Bool { apkService != nil }
+    // APK her zaman kendi içinde yönetiliyor — discovery'e bağımlı değil
+    private var hasApk: Bool { apkConnected }
 
     var body: some View {
         VStack(spacing: 0) {
             statusBar
             if !atvConnected { reconnectBanner }
             tabBar
-            // tabContent kalan tüm alanı kaplar
             tabContent
         }
         .background(Color.appBg.ignoresSafeArea())
         .navigationBarHidden(true)
         .task { await initAtv() }
-        .task { await retryApkIfNeeded() }
-        .onReceive(apkService?.objectWillChange.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { _ in
-            apkConnected = apkService?.isConnected ?? false
+        .task { startApkContinuous() }   // APK bağlantısı arka planda sürekli çalışır
+        .onReceive(apk.objectWillChange) {
+            apkConnected = apk.isConnected
         }
         .onReceive(atv.objectWillChange) {
             atvConnected = atv.isConnected
         }
+        .onDisappear {
+            apk.disconnect()
+        }
+    }
+
+    // MARK: - APK continuous connect
+
+    private func startApkContinuous() {
+        // discovery'den gelen apkService'i yok say — kendi MiBoxService'imiz var
+        // connectContinuous: bağlanamadıysa 3s'de, bağlıysa 5s'de kontrol eder
+        apk.connectContinuous(to: device.ip)
     }
 
     // MARK: - Status bar
 
     private var statusBar: some View {
         HStack(spacing: 10) {
-            if hasApk {
-                Circle().fill(apkConnected ? Color.greenOk : .red).frame(width: 8, height: 8)
-                Text(apkConnected ? "Cursor" : "Cursor yok")
-                    .font(.system(size: 11))
-                    .foregroundColor(apkConnected ? .greenOk : .red)
-            }
-            Circle().fill(atvConnected ? Color.greenOk : .red).frame(width: 8, height: 8)
-            Text(atvConnected ? "TV Remote" : "Bağlantı yok")
-                .font(.system(size: 11))
+            // APK durumu
+            Circle()
+                .fill(apkConnected ? Color.greenOk : Color(hex: "4A5568"))
+                .frame(width: 7, height: 7)
+            Text(apkConnected ? "APK ✓" : "APK yok")
+                .font(.system(size: 10))
+                .foregroundColor(apkConnected ? .greenOk : Color(hex: "4A5568"))
+
+            // ATV durumu
+            Circle()
+                .fill(atvConnected ? Color.greenOk : .red)
+                .frame(width: 7, height: 7)
+            Text(atvConnected ? "TV Remote ✓" : "Bağlantı yok")
+                .font(.system(size: 10))
                 .foregroundColor(atvConnected ? .greenOk : .red)
+
             Spacer()
-            Text(device.ip).font(.system(size: 11)).foregroundColor(.gray)
+            Text(device.ip).font(.system(size: 10)).foregroundColor(Color(hex: "4A5568"))
             Button(action: { dismiss() }) {
-                Image(systemName: "xmark").foregroundColor(.gray).font(.system(size: 14))
+                Image(systemName: "xmark")
+                    .foregroundColor(Color(hex: "4A5568"))
+                    .font(.system(size: 13))
             }
         }
         .padding(.horizontal, 16)
@@ -62,7 +82,7 @@ struct RemoteView: View {
         .background(Color.cardBg)
     }
 
-    // MARK: - Reconnect banner
+    // MARK: - Reconnect banner (sadece ATV bağlı değilken)
 
     private var reconnectBanner: some View {
         HStack(spacing: 10) {
@@ -92,10 +112,14 @@ struct RemoteView: View {
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
         .background(Color(hex: "1a1a2e"))
-        .overlay(Rectangle().frame(height: 1).foregroundColor(Color(hex: "fbbf24").opacity(0.4)), alignment: .bottom)
+        .overlay(
+            Rectangle().frame(height: 1)
+                .foregroundColor(Color(hex: "fbbf24").opacity(0.4)),
+            alignment: .bottom
+        )
     }
 
-    // MARK: - Tab bar
+    // MARK: - Tab bar — APK bağlıysa Air Mouse + Touchpad, değilse sadece Kumanda
 
     private var tabs: [String] {
         hasApk ? ["Air Mouse", "Touchpad", "Debug"] : ["Kumanda", "Debug"]
@@ -104,9 +128,10 @@ struct RemoteView: View {
     private var tabBar: some View {
         HStack(spacing: 0) {
             ForEach(Array(tabs.enumerated()), id: \.offset) { idx, name in
-                Button(action: { selectedTab = idx }) {
+                Button(action: { selectedTab = min(idx, tabs.count - 1) }) {
                     VStack(spacing: 4) {
-                        Text(name).font(.system(size: 13))
+                        Text(name)
+                            .font(.system(size: 13))
                             .foregroundColor(selectedTab == idx ? .redAccent : .gray)
                         Rectangle()
                             .fill(selectedTab == idx ? Color.redAccent : .clear)
@@ -118,59 +143,42 @@ struct RemoteView: View {
         }
         .padding(.top, 4)
         .background(Color.cardBg)
+        // APK bağlandığında tab sayısı değişirse selectedTab'ı sıfırla
+        .onChange(of: hasApk) { _ in selectedTab = 0 }
     }
 
     // MARK: - Tab content
 
     @ViewBuilder
     private var tabContent: some View {
-        if hasApk, let svc = apkService {
+        if hasApk {
             switch selectedTab {
-            case 0: AirMouseView(apk: svc, atv: atv)
-            case 1: TouchpadView(apk: svc, atv: atv)
-            default: DebugView(logs: $logs, onClear: { logs.removeAll() }, onReconnect: reconnect)
+            case 0: AirMouseView(apk: apk, atv: atv)
+            case 1: TouchpadView(apk: apk, atv: atv)
+            default: debugView
             }
         } else {
             switch selectedTab {
             case 0: DpadView(atv: atv)
-            default: DebugView(logs: $logs, onClear: { logs.removeAll() }, onReconnect: reconnect)
+            default: debugView
             }
         }
     }
 
-    // MARK: - APK background retry
-
-    private func retryApkIfNeeded() async {
-        guard apkService == nil, !apkRetried else { return }
-        apkRetried = true
-        try? await Task.sleep(for: .seconds(2))
-        let open = await withCheckedContinuation { cont in
-            let conn = NWConnection(host: .init(device.ip), port: 9876, using: .tcp)
-            var done = false
-            conn.stateUpdateHandler = { state in
-                switch state {
-                case .ready:   guard !done else { return }; done = true; conn.cancel(); cont.resume(returning: true)
-                case .failed, .cancelled: guard !done else { return }; done = true; cont.resume(returning: false)
-                default: break
-                }
-            }
-            conn.start(queue: .global())
-            Task {
-                try? await Task.sleep(for: .seconds(2))
-                guard !done else { return }; done = true; conn.cancel(); cont.resume(returning: false)
-            }
-        }
-        if open { addLog("⚠️ APK portu bulundu ama bu oturumda aktif değil. Geri dönüp tekrar bağlanın.") }
+    private var debugView: some View {
+        DebugView(
+            logs: $logs,
+            onClear: { logs.removeAll() },
+            onReconnect: reconnect
+        )
     }
 
-    // MARK: - Reconnect
+    // MARK: - ATV reconnect
 
     private func reconnect() {
         guard !isReconnecting else { return }
         Task { await initAtv() }
     }
-
-    // MARK: - ATV init
 
     private func initAtv() async {
         guard !isReconnecting else { return }
@@ -197,7 +205,7 @@ struct RemoteView: View {
             ok = await atv.connect(ip: device.ip, port: device.remotePort)
             if ok { break }
             addLog("Bağlantı denemesi \(attempt) başarısız, bekleniyor...")
-            if attempt < 3 { try? await Task.sleep(for: .seconds(2)) }
+            if attempt < 3 { try? await Task.sleep(nanoseconds: 2_000_000_000) }
         }
         atvConnected = ok
         addLog(ok ? "ATV bağlandı ✓" : "ATV bağlantısı başarısız! (3 deneme)")
