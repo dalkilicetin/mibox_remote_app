@@ -81,16 +81,8 @@ final class AtvRemoteService: ObservableObject {
                     guard !done else { return }; done = true
                     Task { @MainActor in
                         self?.log("❌ Bağlantı hatası: \(e.localizedDescription)")
-                        // -9825 (bad certificate) veya -9813 (cert expired) →
-                        // cert geçersiz, reconnect yerine pairing'e düş
-                        let desc = e.localizedDescription
-                        let isCertError = desc.contains("9825") || desc.contains("9813")
-                                       || desc.contains("bad certificate")
-                                       || desc.contains("certificate")
-                        if isCertError {
-                            self?.log("🔐 Sertifika hatası — yeniden eşleştirme gerekiyor")
-                            self?.cancelInternal()
-                            self?.onCertInvalid?()
+                        if self?.isCertError(e.localizedDescription) == true {
+                            self?.onCertError(e.localizedDescription)
                         } else {
                             self?.onDisconnect()
                         }
@@ -156,16 +148,10 @@ final class AtvRemoteService: ObservableObject {
             if err == nil && !done { Task { @MainActor in self.receive() } }
             else {
                 if let err {
-                    let desc = err.localizedDescription
                     Task { @MainActor in
                         self.log("📡 Receive hata: \(err)")
-                        let isCertError = desc.contains("9825") || desc.contains("9813")
-                                       || desc.contains("bad certificate")
-                                       || desc.contains("certificate")
-                        if isCertError {
-                            self.log("🔐 Sertifika hatası — yeniden eşleştirme gerekiyor")
-                            self.cancelInternal()
-                            self.onCertInvalid?()
+                        if self.isCertError(err.localizedDescription) {
+                            self.onCertError(err.localizedDescription)
                         } else {
                             self.onDisconnect()
                         }
@@ -343,24 +329,34 @@ final class AtvRemoteService: ObservableObject {
         conn.send(content: frame, completion: .idempotent)
     }
 
-    /// 3 saniye içinde remote_configure gelmezse biz başlatıyoruz
+    // MARK: - Cert error detection
+    // -9825 bad certificate, -9824 handshake fail, -9813 cert expired
+    // iOS bazen sadece "handshake failed" veya "TLS alert" verir — hepsini yakala
+    private func isCertError(_ desc: String) -> Bool {
+        let d = desc.lowercased()
+        return d.contains("9825") || d.contains("9824") || d.contains("9813")
+            || d.contains("certificate") || d.contains("tls") || d.contains("handshake")
+            || d.contains("98")   // genel SSL/TLS error range
+    }
+
+    /// 3 saniye içinde remote_configure gelmezse biz başlatıyoruz.
+    /// Guard: sadece bağlı VE henüz configure olmadıysa çalış.
     private func scheduleFallbackConfigure() {
         Task {
             try? await Task.sleep(for: .seconds(3))
-            guard isConnected, !configured else { return }
+            // Bug 2: isConnected + !configured — pairing sırasında tetiklenmesin
+            guard isConnected, !configured, connection != nil else { return }
             configured = true
             log("⚡ Fallback configure — TV 3s içinde configure göndermedi, biz başlatıyoruz")
             sendConfigure()
             try? await Task.sleep(for: .milliseconds(300))
+            guard isConnected else { return }   // arada disconnect olduysa gönderme
             log("⚡ Fallback set_active gönderiliyor")
             sendSetActive()
         }
     }
 
     private func startPing() {
-        // Referans: TV her 5s ping gönderiyor, biz pong'luyoruz.
-        // Referans 16s idle sonra disconnect yapıyor.
-        // Biz sadece bağlantı durumunu loglamak için basit bir task tutuyoruz.
         pingTask?.cancel()
         pingTask = Task {
             var tick = 0
@@ -374,10 +370,10 @@ final class AtvRemoteService: ObservableObject {
     }
 
     private func onDisconnect() {
-        guard isConnected || configured else { return }   // tekrar tetiklenmeyi önle
+        guard isConnected || configured else { return }
         configured = false; isConnected = false
         pingTask?.cancel()
-        log("🔌 Bağlantı kesildi — \(reconnectTask == nil ? "reconnect başlatılıyor" : "zaten reconnect var")")
+        log("🔌 Bağlantı kesildi — reconnect başlatılıyor")
         reconnectTask?.cancel()
         reconnectTask = Task {
             try? await Task.sleep(for: .seconds(4))
@@ -385,6 +381,17 @@ final class AtvRemoteService: ObservableObject {
             log("🔄 Yeniden bağlanmayı deniyorum → \(ip):\(port)")
             _ = await connect(ip: ip, port: port)
         }
+    }
+
+    /// Cert hatası — reconnect OLMAZ, pairing gerekir.
+    // Bug 3+4: reconnectTask kesinlikle iptal edilmeli, onDisconnect çağrılmamalı
+    private func onCertError(_ desc: String) {
+        log("🔐 Cert hatası tespit edildi: \(desc)")
+        // Reconnect task'ı durdur — arka planda tekrar connect denemesin
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        cancelInternal()
+        onCertInvalid?()
     }
 
     private func cancelInternal() {
