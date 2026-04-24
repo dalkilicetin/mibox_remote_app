@@ -34,11 +34,13 @@ import Security
 final class AtvRemoteService: ObservableObject {
     @Published var isConnected = false
     var onLog: ((String) -> Void)?
+    /// TLS cert hatası alınınca tetiklenir — RemoteView pairing'e düşer
+    var onCertInvalid: (() -> Void)?
 
     private var connection: NWConnection?
     private var recvBuf = Data()
     private var configured = false
-    private var activeFeatures = 611   // TV code1 ile AND alınır, 611 sabit başlangıç
+    private var activeFeatures = 611
     private var pingTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     private var ip = ""
@@ -79,7 +81,19 @@ final class AtvRemoteService: ObservableObject {
                     guard !done else { return }; done = true
                     Task { @MainActor in
                         self?.log("❌ Bağlantı hatası: \(e.localizedDescription)")
-                        self?.onDisconnect()
+                        // -9825 (bad certificate) veya -9813 (cert expired) →
+                        // cert geçersiz, reconnect yerine pairing'e düş
+                        let desc = e.localizedDescription
+                        let isCertError = desc.contains("9825") || desc.contains("9813")
+                                       || desc.contains("bad certificate")
+                                       || desc.contains("certificate")
+                        if isCertError {
+                            self?.log("🔐 Sertifika hatası — yeniden eşleştirme gerekiyor")
+                            self?.cancelInternal()
+                            self?.onCertInvalid?()
+                        } else {
+                            self?.onDisconnect()
+                        }
                     }
                     cont.resume(returning: false)
                 case .cancelled:
@@ -141,8 +155,24 @@ final class AtvRemoteService: ObservableObject {
             if let data { Task { @MainActor in self.handleData(data) } }
             if err == nil && !done { Task { @MainActor in self.receive() } }
             else {
-                if let err { Task { @MainActor in self.log("📡 Receive hata: \(err)") } }
-                Task { @MainActor in self.onDisconnect() }
+                if let err {
+                    let desc = err.localizedDescription
+                    Task { @MainActor in
+                        self.log("📡 Receive hata: \(err)")
+                        let isCertError = desc.contains("9825") || desc.contains("9813")
+                                       || desc.contains("bad certificate")
+                                       || desc.contains("certificate")
+                        if isCertError {
+                            self.log("🔐 Sertifika hatası — yeniden eşleştirme gerekiyor")
+                            self.cancelInternal()
+                            self.onCertInvalid?()
+                        } else {
+                            self.onDisconnect()
+                        }
+                    }
+                } else {
+                    Task { @MainActor in self.onDisconnect() }
+                }
             }
         }
     }

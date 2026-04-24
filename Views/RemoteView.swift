@@ -4,18 +4,17 @@ import Network
 
 struct RemoteView: View {
     let device: DiscoveredDevice
-    let apkService: MiBoxService?   // SetupView'dan gelebilir, nil de olabilir — önemli değil
+    let apkService: MiBoxService?
 
     @StateObject private var atv = AtvRemoteService()
-    @StateObject private var apk = MiBoxService()   // Her zaman kendi APK servisi var
+    @StateObject private var apk = MiBoxService()
 
     @State private var logs: [String] = []
     @State private var selectedTab = 0
     @State private var isReconnecting = false
+    @State private var showPairing = false   // cert invalid → pairing sheet
     @Environment(\.dismiss) private var dismiss
 
-    // @Published property'ler @StateObject üzerinden direkt okunuyor
-    // SwiftUI bunlar değişince view'ı otomatik yeniden render eder
     private var atvConnected: Bool { atv.isConnected }
     private var apkConnected: Bool { apk.isConnected }
     private var hasApk: Bool { apk.isConnected }
@@ -31,10 +30,19 @@ struct RemoteView: View {
         .ignoresSafeArea(edges: .bottom)
         .navigationBarHidden(true)
         .task { await initAtv() }
-        .task { startApkContinuous() }   // APK bağlantısı arka planda sürekli çalışır
-        // @StateObject @Published değişkenleri SwiftUI tarafından otomatik izleniyor
-        .onDisappear {
-            apk.disconnect()
+        .task { startApkContinuous() }
+        .onDisappear { apk.disconnect() }
+        // Cert invalid → pairing sheet otomatik açılır
+        .sheet(isPresented: $showPairing) {
+            NavigationStack {
+                PairingView(device: device) { success in
+                    showPairing = false
+                    if success {
+                        // Yeni cert kaydedildi — ATV'ye yeniden bağlan
+                        Task { await initAtv() }
+                    }
+                }
+            }
         }
     }
 
@@ -220,9 +228,20 @@ struct RemoteView: View {
             }
         }
 
+        // Cert invalid gelince: eski cert'i sil, pairing sheet aç
+        atv.onCertInvalid = {
+            Task { @MainActor in
+                self.addLog("🔐 Cert geçersiz — eski sertifika siliniyor, yeniden eşleştirme başlıyor")
+                KeychainHelper.deleteCertAndKey(certKey: self.device.certKey)
+                self.isReconnecting = false
+                self.showPairing = true
+            }
+        }
+
         guard let identity = KeychainHelper.loadIdentity(certKey: device.certKey) else {
-            addLog("❌ Sertifika bulunamadı (certKey=\(device.certKey))!")
+            addLog("❌ Sertifika bulunamadı — yeniden eşleştirme gerekiyor")
             isReconnecting = false
+            showPairing = true
             return
         }
         atv.setIdentity(identity)
@@ -231,6 +250,8 @@ struct RemoteView: View {
         for attempt in 1...3 {
             ok = await atv.connect(ip: device.ip, port: device.remotePort)
             if ok { break }
+            // Cert hatası onCertInvalid'ı tetikledi — döngüyü kes
+            if showPairing { isReconnecting = false; return }
             addLog("Bağlantı denemesi \(attempt) başarısız, bekleniyor...")
             if attempt < 3 { try? await Task.sleep(nanoseconds: 2_000_000_000) }
         }
