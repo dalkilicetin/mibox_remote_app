@@ -167,6 +167,7 @@ final class MiBoxService: ObservableObject {
     // MARK: - Commands
 
     func moveCursor(dx: Int, dy: Int) {
+        // Client-side pozisyon tahmini — APK'dan x/y cevabı gelince üzerine yazılır
         cursorX = max(0, min(Self.screenW, cursorX + dx))
         cursorY = max(0, min(Self.screenH, cursorY + dy))
         send(["type": "move", "dx": dx, "dy": dy])
@@ -178,10 +179,10 @@ final class MiBoxService: ObservableObject {
     func hideCursor()             { send(["type": "hide"]) }
 
     func showCursor() {
-        let dx = Self.screenW / 2 - cursorX
-        let dy = Self.screenH / 2 - cursorY
-        send(["type": "move", "dx": dx, "dy": dy])
-        Task { try? await Task.sleep(nanoseconds: 50_000_000); send(["type": "show"]) }
+        // Cursor'ı merkeze taşıma — APK kendi pozisyonunu biliyor.
+        // Sadece show komutu gönder, APK güncel pozisyonda gösterecek.
+        send(["type": "show"])
+        // APK'dan x/y cevabı gelince cursorX/cursorY güncellenecek (handleData)
     }
 
     func setScrollMode(_ mode: Int) {
