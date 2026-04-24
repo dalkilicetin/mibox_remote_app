@@ -3,8 +3,14 @@ import Combine
 import Network
 
 struct RemoteView: View {
-    let device: DiscoveredDevice
+    // @State: pairing sonrası certKey (MAC) güncellenebilmeli
+    @State private var device: DiscoveredDevice
     let apkService: MiBoxService?
+
+    init(device: DiscoveredDevice, apkService: MiBoxService?) {
+        _device = State(initialValue: device)
+        self.apkService = apkService
+    }
 
     @StateObject private var atv = AtvRemoteService()
     @StateObject private var apk = MiBoxService()
@@ -13,7 +19,6 @@ struct RemoteView: View {
     @State private var selectedTab = 0
     @State private var isReconnecting = false
     @State private var showPairing = false
-    // Fix 3: pairing lock — onCertInvalid iki kez tetiklenirse ikincisi ignore edilir
     @State private var isPairingInProgress = false
     @Environment(\.dismiss) private var dismiss
 
@@ -37,14 +42,22 @@ struct RemoteView: View {
         // Cert invalid → pairing sheet otomatik açılır
         .sheet(isPresented: $showPairing) {
             NavigationStack {
-                PairingView(device: device) { success in
+                PairingView(device: device) { success, newCertKey in
                     showPairing = false
                     isPairingInProgress = false
-                    atv.setPairing(false)       // Fix 4: reconnect tekrar açılabilir
+                    atv.setPairing(false)
                     if success {
+                        // Risk 1 fix: certKey'i device'a uygula
+                        // Böylece initAtv() doğru key ile loadIdentity yapabilir
+                        if let key = newCertKey, !key.isEmpty {
+                            // MAC ise device.mac set et, değilse IP kalır
+                            if key != device.ip {
+                                device.mac = key
+                            }
+                            // UserDefaults'a yeni certkey kaydet
+                            KeychainHelper.saveStr(key, key: "mibox_certkey")
+                        }
                         Task {
-                            // Fix 5: TV pairing bağlantısını kapatıp remote port'u açıyor
-                            // 300ms bekle, race condition azalt
                             try? await Task.sleep(for: .milliseconds(300))
                             await initAtv()
                         }

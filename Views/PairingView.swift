@@ -2,7 +2,9 @@ import SwiftUI
 
 struct PairingView: View {
     let device: DiscoveredDevice
-    let onDone: (Bool) -> Void
+    /// success: true ise eşleştirme tamamlandı
+    /// certKey: pairing sonrası kullanılacak anahtar (MAC varsa MAC, yoksa IP)
+    let onDone: (Bool, String?) -> Void
 
     @StateObject private var vm = PairingVM()
 
@@ -34,7 +36,7 @@ struct PairingView: View {
         .toolbarColorScheme(.dark, for: .navigationBar)
         .task { await vm.start(device: device) }
         .onReceive(vm.$pairingSuccess) { success in
-            if success { onDone(true) }
+            if success { onDone(true, vm.finalCertKey) }
         }
     }
 
@@ -119,6 +121,8 @@ final class PairingVM: ObservableObject {
     @Published var pin = ""
     @Published var logs: [String] = []
     @Published var pairingSuccess = false
+    /// Pairing tamamlanınca dışarıya verilen certKey — MAC varsa MAC, yoksa IP
+    @Published var finalCertKey: String? = nil
 
     private let svc = PairingService()
     private var deviceIP = ""
@@ -178,7 +182,7 @@ final class PairingVM: ObservableObject {
                 svc.saveIdentity(certKey: certKey)
                 KeychainHelper.saveInt(6466, key: KeychainHelper.remotePortKey(certKey: certKey))
                 status = "Eşleştirme başarılı!"
-                // TV'nin pairing bağlantısını kapatıp remote port'u açmasına zaman ver
+                finalCertKey = certKey   // MAC veya IP — dışarıya bildir
                 try? await Task.sleep(for: .milliseconds(1500))
                 svc.close()
                 pairingSuccess = true
