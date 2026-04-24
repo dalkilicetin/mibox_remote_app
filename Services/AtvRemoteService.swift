@@ -42,10 +42,15 @@ final class AtvRemoteService: ObservableObject {
     private var configured = false
     private var activeFeatures = 611
     private var pingTask: Task<Void, Never>?
+    private var pingTimeoutTask: Task<Void, Never>?   // Bug 1: ping timeout
     private var reconnectTask: Task<Void, Never>?
     private var ip = ""
     private var port = 6466
     private var identity: SecIdentity?
+    private var lastPingTime = Date()                 // Bug 1: ghost connection önleme
+    private var receivedAnyData = false               // Bug 5: fallback configure guard
+    // Sonsuz döngü önleme: cert error callback sadece bir kez tetiklensin
+    private var certErrorFired = false
 
     func setIdentity(_ id: SecIdentity) { identity = id }
 
@@ -53,6 +58,8 @@ final class AtvRemoteService: ObservableObject {
 
     func connect(ip: String, port: Int = 6466) async -> Bool {
         self.ip = ip; self.port = port
+        certErrorFired = false        // yeni connect denemesi — sıfırla
+        receivedAnyData = false
         cancelInternal()
         guard let identity else { log("❌ Sertifika yok"); return false }
 
@@ -98,10 +105,11 @@ final class AtvRemoteService: ObservableObject {
                 }
             }
             conn.start(queue: .global())
+            // Bug 4: 8sn timeout — bazı TV'ler 6-8sn açılıyor
             Task {
-                try? await Task.sleep(for: .seconds(5))
+                try? await Task.sleep(for: .seconds(8))
                 guard !done else { return }; done = true
-                Task { @MainActor [self] in self.log("⏰ Bağlantı zaman aşımı (5s)") }
+                Task { @MainActor [self] in self.log("⏰ Bağlantı zaman aşımı (8s)") }
                 conn.cancel(); cont.resume(returning: false)
             }
         }
@@ -164,11 +172,19 @@ final class AtvRemoteService: ObservableObject {
     }
 
     private func handleData(_ data: Data) {
+        receivedAnyData = true        // Bug 5: fallback configure için
         recvBuf.append(data)
         log("📥 raw(\(data.count)b): \(data.prefix(8).map { String(format:"%02x",$0) }.joined(separator:" "))")
         while !recvBuf.isEmpty {
-            guard let (len, n) = decodeVarint(recvBuf, at: 0), recvBuf.count >= n + len else {
-                log("⏸ Mesaj henüz tam değil (buf=\(recvBuf.count)b, beklenen=\(recvBuf.first.map{"\($0)b"} ?? "?"))")
+            guard let (len, n) = decodeVarint(recvBuf, at: 0) else { break }
+            // Bug 3: malformed packet koruması — 0 veya aşırı büyük length → buffer temizle
+            guard len > 0 && len < 10_000 else {
+                log("⚠️ Geçersiz mesaj uzunluğu (\(len)) — buffer temizleniyor")
+                recvBuf.removeAll()
+                return
+            }
+            guard recvBuf.count >= n + len else {
+                log("⏸ Mesaj henüz tam değil (buf=\(recvBuf.count)b, beklenen=\(n + len)b)")
                 break
             }
             let msg = recvBuf[n..<(n + len)]
@@ -213,6 +229,7 @@ final class AtvRemoteService: ObservableObject {
             log("⚠️ remote_error ← TV: \(errBytes)")
 
         case 0x42: // field 8 = remote_ping_request
+            lastPingTime = Date()     // Bug 1: ghost connection için timestamp güncelle
             sendPong(msg)
 
         case 0x4A: // field 9 = remote_ping_response (TV bizim ping'imize cevap verirse)
@@ -332,39 +349,53 @@ final class AtvRemoteService: ObservableObject {
     // MARK: - Cert error detection
     // -9825 bad certificate, -9824 handshake fail, -9813 cert expired
     // iOS bazen sadece "handshake failed" veya "TLS alert" verir — hepsini yakala
+    // MARK: - Cert error detection
+    // "98" genel match KALDIRILDI — false positive yapıyordu → sonsuz döngü
     private func isCertError(_ desc: String) -> Bool {
         let d = desc.lowercased()
         return d.contains("9825") || d.contains("9824") || d.contains("9813")
-            || d.contains("certificate") || d.contains("tls") || d.contains("handshake")
-            || d.contains("98")   // genel SSL/TLS error range
+            || d.contains("bad certificate")
+            || d.contains("certificate unknown")
+            || (d.contains("tls") && d.contains("alert"))
+            || d.contains("handshake failure")
     }
 
-    /// 3 saniye içinde remote_configure gelmezse biz başlatıyoruz.
-    /// Guard: sadece bağlı VE henüz configure olmadıysa çalış.
+    /// Bug 5: TV'den hiç veri gelmemişse fallback configure çalıştır.
     private func scheduleFallbackConfigure() {
         Task {
-            try? await Task.sleep(for: .seconds(3))
-            // Bug 2: isConnected + !configured — pairing sırasında tetiklenmesin
+            try? await Task.sleep(for: .seconds(4))
             guard isConnected, !configured, connection != nil else { return }
+            if receivedAnyData {
+                log("ℹ️ Fallback configure atlandı — TV mesaj gönderdi")
+                return
+            }
             configured = true
-            log("⚡ Fallback configure — TV 3s içinde configure göndermedi, biz başlatıyoruz")
+            log("⚡ Fallback configure — TV 4s içinde configure göndermedi")
             sendConfigure()
             try? await Task.sleep(for: .milliseconds(300))
-            guard isConnected else { return }   // arada disconnect olduysa gönderme
+            guard isConnected else { return }
             log("⚡ Fallback set_active gönderiliyor")
             sendSetActive()
         }
     }
 
+    // Bug 1: Ping timeout — ghost connection önleme
     private func startPing() {
         pingTask?.cancel()
-        pingTask = Task {
-            var tick = 0
+        pingTimeoutTask?.cancel()
+        lastPingTime = Date()
+
+        pingTimeoutTask = Task {
             while !Task.isCancelled && isConnected {
-                try? await Task.sleep(for: .seconds(10))
-                tick += 1
+                try? await Task.sleep(for: .seconds(5))
                 guard isConnected else { break }
-                log("💓 Bağlantı canlı — \(tick * 10)s geçti")
+                let elapsed = Date().timeIntervalSince(lastPingTime)
+                if elapsed > 20 {
+                    log("💀 Ping timeout (\(Int(elapsed))s) — ghost connection, disconnect")
+                    onDisconnect()
+                    break
+                }
+                log("💓 Bağlantı canlı — son ping: \(Int(elapsed))s önce")
             }
         }
     }
@@ -373,6 +404,7 @@ final class AtvRemoteService: ObservableObject {
         guard isConnected || configured else { return }
         configured = false; isConnected = false
         pingTask?.cancel()
+        pingTimeoutTask?.cancel()
         log("🔌 Bağlantı kesildi — reconnect başlatılıyor")
         reconnectTask?.cancel()
         reconnectTask = Task {
@@ -383,21 +415,26 @@ final class AtvRemoteService: ObservableObject {
         }
     }
 
-    /// Cert hatası — reconnect OLMAZ, pairing gerekir.
-    // Bug 3+4: reconnectTask kesinlikle iptal edilmeli, onDisconnect çağrılmamalı
+    /// Cert hatası — reconnect OLMAZ. certErrorFired ile sonsuz döngü önlenir.
     private func onCertError(_ desc: String) {
-        log("🔐 Cert hatası tespit edildi: \(desc)")
-        // Reconnect task'ı durdur — arka planda tekrar connect denemesin
-        reconnectTask?.cancel()
-        reconnectTask = nil
+        guard !certErrorFired else {
+            log("ℹ️ Cert error zaten tetiklendi, yoksayılıyor")
+            return
+        }
+        certErrorFired = true
+        log("🔐 Cert hatası: \(desc)")
+        reconnectTask?.cancel(); reconnectTask = nil
+        pingTimeoutTask?.cancel()
         cancelInternal()
         onCertInvalid?()
     }
 
     private func cancelInternal() {
         pingTask?.cancel()
+        pingTimeoutTask?.cancel()
         connection?.cancel(); connection = nil
-        configured = false; isConnected = false; recvBuf.removeAll()
+        configured = false; isConnected = false
+        recvBuf.removeAll(); receivedAnyData = false
         log("🧹 Internal state sıfırlandı")
     }
 
