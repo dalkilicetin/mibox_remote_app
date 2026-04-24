@@ -124,8 +124,7 @@ final class DeviceDiscovery: ObservableObject {
             let handle: (NWBrowser.Result) -> Void = { [weak self] result in
                 guard let self else { return }
                 if case let .service(name, type, domain, interface) = result.endpoint {
-                    Task { @MainActor in
-                        guard let self else { return }
+                    Task { @MainActor [self] in
                         let ep = NWEndpoint.service(name: name, type: type,
                                                     domain: domain, interface: interface)
                         if let ip = await self.resolveEndpointTracked(ep) {
