@@ -66,24 +66,29 @@ struct SetupView: View {
                     }
                 }
             }
-            .navigationDestination(item: $destination) { dest in
-                switch dest {
-                case .pairing(let d):
-                    PairingView(device: d) { success, newCertKey in
-                        if success {
-                            // certKey güncelle — MAC varsa device.mac set et
-                            var updated = d
-                            if let key = newCertKey, !key.isEmpty, key != d.ip {
-                                updated.mac = key
+            // iOS 16 uyumlu: navigationDestination(isPresented:)
+            .navigationDestination(isPresented: .init(
+                get: { destination != nil },
+                set: { if !$0 { destination = nil } }
+            )) {
+                if let dest = destination {
+                    switch dest {
+                    case .pairing(let d):
+                        PairingView(device: d) { success, newCertKey in
+                            if success {
+                                var updated = d
+                                if let key = newCertKey, !key.isEmpty, key != d.ip {
+                                    updated.mac = key
+                                }
+                                KeychainHelper.saveStr(updated.certKey, key: "mibox_certkey")
+                                destination = .remote(updated, nil)
+                            } else {
+                                destination = nil
                             }
-                            KeychainHelper.saveStr(updated.certKey, key: "mibox_certkey")
-                            destination = .remote(updated, nil)
-                        } else {
-                            destination = nil
                         }
+                    case .remote(let d, let svc):
+                        RemoteView(device: d, apkService: svc)
                     }
-                case .remote(let d, let svc):
-                    RemoteView(device: d, apkService: svc)
                 }
             }
         }
