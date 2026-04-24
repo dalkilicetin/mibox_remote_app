@@ -224,7 +224,7 @@ final class InputEngine {
             let dy = Int((mapped.cy - lastCursorY).rounded())
             return dx == 0 && dy == 0 ? nil : (dx, dy)
         } else {
-            let dx = Int((accDa * sensitivity / 25.0).rounded())
+            let dx = Int((accDa * sensitivity / 25.0 * -1.0).rounded())
             let dy = Int((accDb * sensitivity / 25.0 * -1.0).rounded())
             return dx == 0 && dy == 0 ? nil : (dx, dy)
         }
