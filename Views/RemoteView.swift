@@ -9,15 +9,16 @@ struct RemoteView: View {
     @StateObject private var atv = AtvRemoteService()
     @StateObject private var apk = MiBoxService()   // Her zaman kendi APK servisi var
 
-    @State private var atvConnected = false
-    @State private var apkConnected = false
     @State private var logs: [String] = []
     @State private var selectedTab = 0
     @State private var isReconnecting = false
     @Environment(\.dismiss) private var dismiss
 
-    // APK her zaman kendi içinde yönetiliyor — discovery'e bağımlı değil
-    private var hasApk: Bool { apkConnected }
+    // @Published property'ler @StateObject üzerinden direkt okunuyor
+    // SwiftUI bunlar değişince view'ı otomatik yeniden render eder
+    private var atvConnected: Bool { atv.isConnected }
+    private var apkConnected: Bool { apk.isConnected }
+    private var hasApk: Bool { apk.isConnected }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,16 +27,12 @@ struct RemoteView: View {
             tabBar
             tabContent
         }
-        .background(Color.appBg.ignoresSafeArea())
+        .background(Color.appBg)
+        .ignoresSafeArea(edges: .bottom)
         .navigationBarHidden(true)
         .task { await initAtv() }
         .task { startApkContinuous() }   // APK bağlantısı arka planda sürekli çalışır
-        .onReceive(apk.objectWillChange) {
-            apkConnected = apk.isConnected
-        }
-        .onReceive(atv.objectWillChange) {
-            atvConnected = atv.isConnected
-        }
+        // @StateObject @Published değişkenleri SwiftUI tarafından otomatik izleniyor
         .onDisappear {
             apk.disconnect()
         }
@@ -237,7 +234,6 @@ struct RemoteView: View {
             addLog("Bağlantı denemesi \(attempt) başarısız, bekleniyor...")
             if attempt < 3 { try? await Task.sleep(nanoseconds: 2_000_000_000) }
         }
-        atvConnected = ok
         addLog(ok ? "ATV bağlandı ✓" : "ATV bağlantısı başarısız! (3 deneme)")
         isReconnecting = false
     }
