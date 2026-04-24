@@ -12,12 +12,15 @@ final class MiBoxService: ObservableObject {
     static let cursorPort:    UInt16 = 9876
     nonisolated static let discoveryPort: UInt16 = 9877
     nonisolated static let discoveryMagic        = "AIRCURSOR_DISCOVER"
-    static let screenW               = 1920
-    static let screenH               = 1080
+    // Gerçek ekran boyutu APK bağlantısında güncellenir
+    nonisolated static let defaultScreenW = 1920
+    nonisolated static let defaultScreenH = 1080
 
     @Published var isConnected = false
-    private(set) var cursorX = screenW / 2
-    private(set) var cursorY = screenH / 2
+    private(set) var screenW = MiBoxService.defaultScreenW
+    private(set) var screenH = MiBoxService.defaultScreenH
+    private(set) var cursorX = MiBoxService.defaultScreenW / 2
+    private(set) var cursorY = MiBoxService.defaultScreenH / 2
     private(set) var atvPairingPort = 6467
     private(set) var atvRemotePort  = 6466
 
@@ -168,21 +171,24 @@ final class MiBoxService: ObservableObject {
 
     func moveCursor(dx: Int, dy: Int) {
         // Client-side pozisyon tahmini — APK'dan x/y cevabı gelince üzerine yazılır
-        cursorX = max(0, min(Self.screenW, cursorX + dx))
-        cursorY = max(0, min(Self.screenH, cursorY + dy))
+        cursorX = max(0, min(screenW, cursorX + dx))
+        cursorY = max(0, min(screenH, cursorY + dy))
         send(["type": "move", "dx": dx, "dy": dy])
     }
 
-    func tap()                    { send(["type": "tap"]) }
+    func tap() {
+        // APK kaynak koduna göre: tap komutu gelince realX/realY'e tıklıyor
+        // Accessibility service bağlıysa a11y ile, değilse log warning
+        send(["type": "tap"])
+    }
     func sendKey(_ code: Int)     { send(["type": "key",  "code":  code]) }
     func sendText(_ text: String) { send(["type": "text", "value": text]) }
     func hideCursor()             { send(["type": "hide"]) }
 
     func showCursor() {
-        // Cursor'ı merkeze taşıma — APK kendi pozisyonunu biliyor.
-        // Sadece show komutu gönder, APK güncel pozisyonda gösterecek.
         send(["type": "show"])
-        // APK'dan x/y cevabı gelince cursorX/cursorY güncellenecek (handleData)
+        // show response'u x/y içermiyor; move(0,0) ile APK'dan güncel pozisyonu alalım
+        Task { try? await Task.sleep(nanoseconds: 50_000_000); send(["type": "move", "dx": 0, "dy": 0]) }
     }
 
     func setScrollMode(_ mode: Int) {
@@ -227,8 +233,13 @@ final class MiBoxService: ObservableObject {
             let line = recvBuf[..<nl.lowerBound]
             recvBuf.removeSubrange(..<nl.upperBound)
             if let json = try? JSONSerialization.jsonObject(with: line) as? [String: Any] {
+                // APK bağlandığında: {"status":"connected","w":W,"h":H,"x":X,"y":Y}
+                // APK move response: {"x":X,"y":Y}
+                // APK tap response:  {"tap":true,"x":X,"y":Y}
                 if let x = json["x"] as? Int { cursorX = x }
                 if let y = json["y"] as? Int { cursorY = y }
+                if let w = json["w"] as? Int, w > 0 { screenW = w }
+                if let h = json["h"] as? Int, h > 0 { screenH = h }
                 if let p = json["atvPairingPort"] as? Int { atvPairingPort = p }
                 if let r = json["atvRemotePort"]  as? Int { atvRemotePort  = r }
             }

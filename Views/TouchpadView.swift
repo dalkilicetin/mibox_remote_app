@@ -187,7 +187,7 @@ struct TouchpadView: View {
         guard !swipeCooldown else { return }
         swipeCooldown = true
         let cx = apk.cursorX, cy = apk.cursorY
-        let y2 = max(50, min(MiBoxService.screenH - 50, cy - 150 * dir))
+        let y2 = max(50, min(apk.screenH - 50, cy - 150 * dir))
         apk.sendSwipe(x1: cx, y1: cy, x2: cx, y2: y2, duration: 100)
         apk.setScrollMode(1)
         Task { try? await Task.sleep(for: .milliseconds(200)); swipeCooldown = false }
