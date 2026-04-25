@@ -3,9 +3,16 @@ import Network
 import Darwin
 
 struct SetupView: View {
-    // Callbacks — RootView yönetir
-    var onRemote:  (DiscoveredDevice) -> Void = { _ in }
-    var onPairing: (DiscoveredDevice) -> Void = { _ in }
+    var onRemote:  (DiscoveredDevice) -> Void
+    var onPairing: (DiscoveredDevice) -> Void
+
+    init(
+        onRemote:  @escaping (DiscoveredDevice) -> Void = { _ in },
+        onPairing: @escaping (DiscoveredDevice) -> Void = { _ in }
+    ) {
+        self.onRemote  = onRemote
+        self.onPairing = onPairing
+    }
 
     @StateObject private var discovery = DeviceDiscovery()
     @State private var showManualEntry = false
