@@ -1,1 +1,3 @@
-ekrana oturmama problemi project.yml dosyası update edilerek çözüldü. bugFix giderildi.
+bugFix-completed: uygulamanın ekrana oturmama problemi project.yml dosyası update edilerek çözüldü. bugFix giderildi.
+bugFix-completed: pairing starts at every opening of the app
+bugFix-completed: "yeni cihaz algıladı" ekranı açılması
