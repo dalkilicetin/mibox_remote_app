@@ -27,13 +27,21 @@ struct RemoteView: View {
     private var hasApk: Bool { apk.isConnected }
 
     var body: some View {
-        VStack(spacing: 0) {
-            statusBar
-            if !atvConnected { reconnectBanner }
-            tabBar
-            tabContent
+        GeometryReader { _ in
+            ZStack {
+                Color.appBg.ignoresSafeArea()
+                VStack(spacing: 0) {
+                    statusBar
+                    if !atvConnected { reconnectBanner }
+                    tabBar
+                    tabContent
+                        .frame(maxHeight: .infinity)
+                        .layoutPriority(1)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(Color.appBg)
         .ignoresSafeArea(edges: .bottom)
         .navigationBarHidden(true)
         .task { await initAtv() }

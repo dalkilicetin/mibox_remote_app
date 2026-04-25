@@ -10,7 +10,8 @@ struct PairingView: View {
 
     var body: some View {
         GeometryReader { geo in
-            ZStack { Color.appBg.ignoresSafeArea()
+            ZStack {
+                Color.appBg.ignoresSafeArea()
                 ScrollView {
                     VStack(spacing: geo.size.height * 0.03) {
                         Image(systemName: "link")
@@ -30,6 +31,7 @@ struct PairingView: View {
                     .padding(geo.size.width * 0.06)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .navigationTitle("TV Eşleştirme — \(device.ip)")
         .navigationBarTitleDisplayMode(.inline)

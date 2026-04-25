@@ -62,9 +62,13 @@ struct SetupView: View {
                                 .padding(.horizontal, geo.size.width * 0.06).padding(.bottom, 8)
                         }
                         deviceList
+                            .frame(maxHeight: .infinity)
+                            .layoutPriority(1)
                         bottomBar(geo: geo)
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             // iOS 16 uyumlu: navigationDestination(isPresented:)
             .navigationDestination(isPresented: .init(

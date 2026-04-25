@@ -14,6 +14,12 @@ struct DebugView: View {
                         .frame(maxWidth: .infinity).padding(.vertical, 8)
                         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.redAccent))
                 }
+                Button(action: copyLogs) {
+                    Label("Kopyala", systemImage: "doc.on.doc")
+                        .foregroundColor(.blueInfo).font(.system(size: 12))
+                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.blueInfo))
+                }
                 Button(action: onClear) {
                     Text("Temizle").foregroundColor(.gray).font(.system(size: 12))
                         .padding(.horizontal, 12).padding(.vertical, 8)
@@ -33,6 +39,7 @@ struct DebugView: View {
                             Text(line)
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundColor(color(for: line))
+                                .textSelection(.enabled)   // uzun bas → seç/kopyala
                         }
                     }
                     .padding(.horizontal, 12).padding(.bottom, 12)
@@ -40,6 +47,11 @@ struct DebugView: View {
             }
         }
         .background(Color.appBg)
+    }
+
+    private func copyLogs() {
+        UIPasteboard.general.string = logs.joined(separator: "\n")
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 
     private func color(for line: String) -> Color {
