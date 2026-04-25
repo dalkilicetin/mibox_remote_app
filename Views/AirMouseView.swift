@@ -19,7 +19,10 @@ struct AirMouseView: View {
     // Sensor timing
     @State private var lastTime: Date = Date()
 
-    // Tap tracking
+    // DPAD accumulator — küçük hareketleri filtrele
+    @State private var dpadAccumX: Double = 0
+    @State private var dpadAccumY: Double = 0
+    private let dpadThreshold: Double = 120  // pixel — bu kadar hareket edince DPAD gönder
     @State private var tapStart   = CGPoint.zero
     @State private var tapLast    = CGPoint.zero
     @State private var tapTime    = Date()
@@ -186,12 +189,10 @@ struct AirMouseView: View {
                     let ms    = Int(Date().timeIntervalSince(tapTime) * 1000)
                     if moved < Self.TAP_MAX_MOVE && ms < Self.TAP_MAX_MS {
                         if airOn {
-                            // Option 1: ATV protokolü üzerinden tap
-                            // Cursor neredeyse focus oraya gitmiş olabilir
-                            apk.moveCursor(dx: 0, dy: 0)  // cursor sync
-                            apk.tap()                      // APK tap (deneme)
+                            apk.moveCursor(dx: 0, dy: 0)
+                            apk.tap()
                             if atv.isConnected {
-                                atv.sendKey(AtvKey.dpadCenter)  // ATV tap
+                                atv.sendKey(AtvKey.dpadCenter)
                             }
                         } else {
                             sendKey(AtvKey.dpadCenter)
@@ -440,6 +441,21 @@ struct AirMouseView: View {
         apk.moveCursor(dx: dx, dy: dy)
         engine.onCursorUpdate(x: Double(apk.cursorX), y: Double(apk.cursorY))
 
+        // ATV focus'u cursor ile senkronize et
+        if atv.isConnected {
+            dpadAccumX += Double(dx)
+            dpadAccumY += Double(dy)
+
+            if abs(dpadAccumX) >= dpadThreshold {
+                atv.sendKey(dpadAccumX > 0 ? AtvKey.dpadRight : AtvKey.dpadLeft)
+                dpadAccumX = 0
+            }
+            if abs(dpadAccumY) >= dpadThreshold {
+                atv.sendKey(dpadAccumY > 0 ? AtvKey.dpadDown : AtvKey.dpadUp)
+                dpadAccumY = 0
+            }
+        }
+
         debugText = "dx:\(dx) dy:\(dy) \(engine.calibration.isReady ? "[MAP]" : "[DELTA]")"
     }
 
@@ -448,6 +464,8 @@ struct AirMouseView: View {
     private func toggleAir() {
         airOn.toggle()
         engine.reset()
+        dpadAccumX = 0
+        dpadAccumY = 0
         Task {
             try? await Task.sleep(for: .milliseconds(300))
             if airOn { apk.showCursor() } else { apk.hideCursor() }
