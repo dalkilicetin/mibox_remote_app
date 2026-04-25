@@ -182,9 +182,9 @@ final class MiBoxService: ObservableObject {
 
     func tap(x: Int? = nil, y: Int? = nil) {
         if let x = x, let y = y {
-            send(["tap": true, "x": x, "y": y])   // {"tap":true,"x":X,"y":Y} — doğrulandı
+            send(["type": "tap", "x": x, "y": y])
         } else {
-            send(["tap": true])
+            send(["type": "tap"])
         }
     }
 
