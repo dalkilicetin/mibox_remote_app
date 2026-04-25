@@ -29,15 +29,16 @@ struct SetupView: View {
                     headerView(geo: geo)
                     if discovery.isScanning {
                         ProgressView().progressViewStyle(.linear).tint(.redAccent)
-                            .padding(.horizontal, geo.size.width * 0.06).padding(.bottom, 8)
+                            .padding(.horizontal, 24).padding(.bottom, 8)
                     }
                     deviceList
                         .frame(maxHeight: .infinity)
                         .layoutPriority(1)
-                    bottomBar(geo: geo)
+                    bottomBar()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .ignoresSafeArea()
         .onAppear {
@@ -59,7 +60,7 @@ struct SetupView: View {
 
     @ViewBuilder
     private func headerView(geo: GeometryProxy) -> some View {
-        VStack(spacing: geo.size.height * 0.01) {
+        VStack(spacing: 6) {
             Image(systemName: "tv")
                 .font(.system(size: min(geo.size.width * 0.13, 52)))
                 .foregroundColor(.redAccent)
@@ -73,9 +74,9 @@ struct SetupView: View {
                 Text(discovery.status).font(.caption).foregroundColor(.gray).multilineTextAlignment(.center)
             }
         }
-        .padding(.top, geo.size.height * 0.04)
-        .padding(.bottom, geo.size.height * 0.02)
-        .padding(.horizontal, geo.size.width * 0.05)
+        .padding(.top, 20)
+        .padding(.bottom, 12)
+        .padding(.horizontal, 20)
     }
 
     private var deviceList: some View {
@@ -103,14 +104,14 @@ struct SetupView: View {
         .frame(maxHeight: .infinity)
     }
 
-    private func bottomBar(geo: GeometryProxy) -> some View {
-        HStack(spacing: geo.size.width * 0.025) {
+    private func bottomBar() -> some View {
+        HStack(spacing: 12) {
             Button(action: { discovery.startScan() }) {
                 Label(discovery.isScanning ? "Aranıyor..." : "Yeniden Tara",
                       systemImage: "arrow.clockwise")
                     .foregroundColor(.redAccent)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, geo.size.height * 0.018)
+                    .padding(.vertical, 14)
                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.redAccent))
             }
             .disabled(discovery.isScanning)
@@ -122,13 +123,13 @@ struct SetupView: View {
                 Label("Manuel IP", systemImage: "pencil")
                     .foregroundColor(.gray)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, geo.size.height * 0.018)
+                    .padding(.vertical, 14)
                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray))
             }
         }
-        .padding(.horizontal, geo.size.width * 0.04)
-        .padding(.bottom, geo.size.height * 0.03)
-        .padding(.top, geo.size.height * 0.01)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 24)
+        .padding(.top, 8)
     }
 
     // MARK: - Actions
