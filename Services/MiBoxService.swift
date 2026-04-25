@@ -169,39 +169,43 @@ final class MiBoxService: ObservableObject {
 
     // MARK: - Commands
     // Format: production APK binary'den doğrulandı
+    // move: eski {"type":"move","dx":X,"dy":Y} çalışıyordu — korundu
+    // tap:  {"tap":true,"x":X,"y":Y} — binary'den doğrulandı
+    // key:  {"key":X} — binary'den doğrulandı
+    // diğerleri: orijinal format korundu
 
     func moveCursor(dx: Int, dy: Int) {
         cursorX = max(0, min(screenW, cursorX + dx))
         cursorY = max(0, min(screenH, cursorY + dy))
-        send(["dx": dx, "dy": dy])   // {"dx":X,"dy":Y}
+        send(["type": "move", "dx": dx, "dy": dy])   // orijinal çalışan format
     }
 
     func tap(x: Int? = nil, y: Int? = nil) {
         if let x = x, let y = y {
-            send(["tap": true, "x": x, "y": y])   // {"tap":true,"x":X,"y":Y}
+            send(["tap": true, "x": x, "y": y])   // {"tap":true,"x":X,"y":Y} — doğrulandı
         } else {
             send(["tap": true])
         }
     }
 
-    func sendKey(_ code: Int)     { send(["key": code]) }                    // {"key":X}
-    func sendText(_ text: String) { send(["text": true, "value": text]) }    // {"text":true,"value":"..."}
-    func hideCursor()             { send(["hidden": true]) }                 // {"hidden":true}
+    func sendKey(_ code: Int)     { send(["type": "key", "code": code]) }
+    func sendText(_ text: String) { send(["type": "text", "value": text]) }
+    func hideCursor()             { send(["type": "hide"]) }
 
     func showCursor() {
-        send(["hidden": false])   // {"hidden":false}
-        Task { try? await Task.sleep(nanoseconds: 50_000_000); send(["dx": 0, "dy": 0]) }
+        send(["type": "show"])
+        Task { try? await Task.sleep(nanoseconds: 50_000_000); send(["type": "move", "dx": 0, "dy": 0]) }
     }
 
     func setScrollMode(_ mode: Int) {
-        send(["scroll_mode": mode])   // {"scroll_mode":X}
+        send(["type": "scroll_mode", "mode": mode])
         if mode != 0 {
-            Task { try? await Task.sleep(nanoseconds: 500_000_000); send(["scroll_mode": 0]) }
+            Task { try? await Task.sleep(nanoseconds: 500_000_000); send(["type": "scroll_mode", "mode": 0]) }
         }
     }
 
     func sendSwipe(x1: Int, y1: Int, x2: Int, y2: Int, duration: Int = 150) {
-        send(["swipe": true, "x1": x1, "y1": y1, "x2": x2, "y2": y2, "duration": duration])   // {"swipe":true,...}
+        send(["type": "swipe", "x1": x1, "y1": y1, "x2": x2, "y2": y2, "duration": duration])
     }
 
     // MARK: - Private
