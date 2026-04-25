@@ -30,7 +30,9 @@ struct RootView: View {
                         if let key = newCertKey, !key.isEmpty, key != device.ip {
                             updated.mac = key
                         }
+                        // certKey ve IP'yi kaydet — sonraki açılışta tutarlı olsun
                         KeychainHelper.saveStr(updated.certKey, key: "mibox_certkey")
+                        KeychainHelper.saveStr(updated.ip, key: "mibox_ip")
                         screen = .remote(updated)
                     } else {
                         screen = .setup

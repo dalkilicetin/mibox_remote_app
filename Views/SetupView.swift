@@ -200,29 +200,22 @@ struct SetupView: View {
             }
         }
 
-        // Fix 3: 2.5sn timeout — TV sleep/wake için yeterli
-        let reachable = await tcpCheck(ip: savedIP, port: 6466, timeout: 2.5)
-
+        // Fix: tcpCheck kaldırıldı — TV sleep'teyse false dönüp pairing'e düşüyordu
+        // Direkt bağlanmayı dene, AtvRemoteService zaten retry yapıyor
         guard await connectionLock.tryAcquire() else {
-            // Scan zaten bir cihaz bulup lock'u aldı — cache sonucunu yoksay
             isAutoConnecting = false
             return
         }
 
-        // Cache kazandı — scan'i durdur
         discovery.stop()
         let pPort = KeychainHelper.loadInt(KeychainHelper.pairingPortKey(certKey: certKey), def: 6467)
         let rPort = KeychainHelper.loadInt(KeychainHelper.remotePortKey(certKey: certKey),  def: 6466)
         isAutoConnecting = false
 
-        if reachable {
-            var device = DiscoveredDevice(ip: savedIP, hasCert: true,
-                                          pairingPort: pPort, remotePort: rPort)
-            if certKey != savedIP { device.mac = certKey }
-            launchRemote(device)
-        }
-        // reachable değilse: lock alındı ama bağlanamadık.
-        // scan stop edildi — kullanıcı "Cihaz bulunamadı" görür, manuel scan yapabilir.
+        var device = DiscoveredDevice(ip: savedIP, hasCert: true,
+                                      pairingPort: pPort, remotePort: rPort)
+        if certKey != savedIP { device.mac = certKey }
+        launchRemote(device)
     }
 
     private func connectManual() {

@@ -65,24 +65,18 @@ struct RemoteView: View {
     }
 
     private func tryApkConnect() async {
-        addLog("🔍 APK aranıyor (UDP broadcast + TCP)...")
-
-        // Önce UDP discovery — APK'nın bize cevap vermesini bekle
-        let udpIPs = await MiBoxService.discoverAPK(timeout: 2.0)
-        addLog("📡 UDP discovery: \(udpIPs.isEmpty ? "cevap yok" : udpIPs.joined(separator:", "))")
-
-        // Hedef IP'yi bulduk mu?
         let targetIP = device.ip
-        let foundViaUDP = udpIPs.contains(targetIP)
+        addLog("🔍 APK bağlanılıyor → \(targetIP)")
 
-        if foundViaUDP {
-            addLog("✅ APK UDP'de bulundu (\(targetIP)) → TCP bağlanılıyor")
-        } else {
-            addLog("⚠️ APK UDP'de bulunamadı → direkt TCP deneniyor")
+        // UDP ve TCP paralel başlat — UDP'yi bekleme, TCP'yi hemen dene
+        async let udpTask = MiBoxService.discoverAPK(timeout: 2.0)
+        async let tcpTask = apk.connect(to: targetIP)
+
+        let (udpIPs, ok) = await (udpTask, tcpTask)
+
+        if !udpIPs.isEmpty {
+            addLog("📡 UDP discovery: \(udpIPs.joined(separator: ", "))")
         }
-
-        // Her iki durumda da TCP bağlantısını dene
-        let ok = await apk.connect(to: targetIP)
         addLog(ok ? "✅ APK bağlandı (\(targetIP))" : "❌ APK TCP bağlantısı başarısız")
     }
 
