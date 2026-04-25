@@ -402,6 +402,19 @@ final class AtvRemoteService: ObservableObject {
         pingTimeoutTask?.cancel()
         lastPingTime = Date()
 
+        // Ghost input: 30sn'de bir KEYCODE_WAKEUP (224) gönder
+        // TV "kumanda aktif" sanır, Bluetooth pairing ekranı açmaz
+        pingTask = Task {
+            var tick = 0
+            while !Task.isCancelled && isConnected {
+                try? await Task.sleep(for: .seconds(30))
+                guard isConnected, !Task.isCancelled else { break }
+                tick += 1
+                log("👻 Ghost input #\(tick) → TV aktif tutuluyor")
+                sendKey(224)  // KEYCODE_WAKEUP — neutral, UI aksiyonu yok
+            }
+        }
+
         pingTimeoutTask = Task {
             while !Task.isCancelled && isConnected {
                 try? await Task.sleep(for: .seconds(5))

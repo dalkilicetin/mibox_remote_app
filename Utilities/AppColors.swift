@@ -36,4 +36,5 @@ enum AtvKey {
     static let playPause  = 85
     static let enter      = 66
     static let del        = 67
+    static let wakeup     = 224  // ghost input — TV'yi aktif tutar, UI aksiyonu yok
 }
