@@ -238,15 +238,21 @@ final class MiBoxService: ObservableObject {
             let line = recvBuf[..<nl.lowerBound]
             recvBuf.removeSubrange(..<nl.upperBound)
             if let json = try? JSONSerialization.jsonObject(with: line) as? [String: Any] {
-                // APK bağlandığında: {"status":"connected","w":W,"h":H,"x":X,"y":Y}
-                // APK move response: {"x":X,"y":Y}
-                // APK tap response:  {"tap":true,"x":X,"y":Y}
                 if let x = json["x"] as? Int { cursorX = x }
                 if let y = json["y"] as? Int { cursorY = y }
                 if let w = json["w"] as? Int, w > 0 { screenW = w }
                 if let h = json["h"] as? Int, h > 0 { screenH = h }
                 if let p = json["atvPairingPort"] as? Int { atvPairingPort = p }
                 if let r = json["atvRemotePort"]  as? Int { atvRemotePort  = r }
+
+                // Tap response: a11y durumunu logla
+                if json["tap"] != nil {
+                    let a11y = json["a11y"] as? Bool ?? false
+                    let msg = a11y
+                        ? "✅ APK tap → accessibility inject (\(cursorX),\(cursorY))"
+                        : "⚠️ APK tap → fallback (Runtime.exec) (\(cursorX),\(cursorY))"
+                    onLog?(msg)
+                }
             }
         }
     }
