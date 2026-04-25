@@ -441,18 +441,28 @@ struct AirMouseView: View {
         apk.moveCursor(dx: dx, dy: dy)
         engine.onCursorUpdate(x: Double(apk.cursorX), y: Double(apk.cursorY))
 
-        // ATV focus'u cursor ile senkronize et
+        // ATV focus'u cursor ile senkronize et — distance-based repeat
         if atv.isConnected {
             dpadAccumX += Double(dx)
             dpadAccumY += Double(dy)
 
-            if abs(dpadAccumX) >= dpadThreshold {
-                atv.sendKey(dpadAccumX > 0 ? AtvKey.dpadRight : AtvKey.dpadLeft)
-                dpadAccumX = 0
+            // Her 80px'de bir DPAD gönder — birden fazla kez gönderilebilir
+            let stepSize: Double = 80
+            while dpadAccumX >= stepSize {
+                atv.sendKey(AtvKey.dpadRight)
+                dpadAccumX -= stepSize
             }
-            if abs(dpadAccumY) >= dpadThreshold {
-                atv.sendKey(dpadAccumY > 0 ? AtvKey.dpadDown : AtvKey.dpadUp)
-                dpadAccumY = 0
+            while dpadAccumX <= -stepSize {
+                atv.sendKey(AtvKey.dpadLeft)
+                dpadAccumX += stepSize
+            }
+            while dpadAccumY >= stepSize {
+                atv.sendKey(AtvKey.dpadDown)
+                dpadAccumY -= stepSize
+            }
+            while dpadAccumY <= -stepSize {
+                atv.sendKey(AtvKey.dpadUp)
+                dpadAccumY += stepSize
             }
         }
 
