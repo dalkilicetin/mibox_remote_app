@@ -51,9 +51,9 @@ struct SetupView: View {
     }
 
     var body: some View {
-        GeometryReader { geo in
-            ZStack {
-                Color.appBg.ignoresSafeArea()
+        ZStack {
+            Color.appBg.ignoresSafeArea()
+            GeometryReader { geo in
                 VStack(spacing: 0) {
                     headerView(geo: geo)
                     if discovery.isScanning {
@@ -65,9 +65,8 @@ struct SetupView: View {
                         .layoutPriority(1)
                     bottomBar(geo: geo)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(width: geo.size.width, height: geo.size.height)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .ignoresSafeArea()
         .fullScreenCover(item: $destination) { dest in
