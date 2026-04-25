@@ -3,52 +3,16 @@ import Network
 import Darwin
 
 struct SetupView: View {
+    // Callbacks — RootView yönetir
+    var onRemote:  (DiscoveredDevice) -> Void = { _ in }
+    var onPairing: (DiscoveredDevice) -> Void = { _ in }
+
     @StateObject private var discovery = DeviceDiscovery()
-    @State private var destination: NavDest?
     @State private var showManualEntry = false
     @State private var manualIP = ""
     @State private var isAutoConnecting = false
 
-    // Fix: connection lock — race condition önleme
-    // cache connect ve scan result aynı anda destination set etmesin
     private var connectionLock = ConnectionLock()
-
-    enum NavDest: Identifiable, Hashable {
-        case pairing(DiscoveredDevice)
-        case remote(DiscoveredDevice, MiBoxService?)
-
-        var id: String {
-            switch self {
-            case .pairing(let d): return "pair-\(d.ip)"
-            case .remote(let d, _): return "remote-\(d.ip)"
-            }
-        }
-
-        func hash(into hasher: inout Hasher) {
-            switch self {
-            case .pairing(let d):
-                hasher.combine(0)
-                hasher.combine(d)
-            case .remote(let d, let s):
-                hasher.combine(1)
-                hasher.combine(d)
-                if let s = s {
-                    hasher.combine(ObjectIdentifier(s))
-                }
-            }
-        }
-
-        static func == (lhs: NavDest, rhs: NavDest) -> Bool {
-            switch (lhs, rhs) {
-            case (.pairing(let a), .pairing(let b)):
-                return a == b
-            case (.remote(let a, let sa), .remote(let b, let sb)):
-                return a == b && sa === sb
-            default:
-                return false
-            }
-        }
-    }
 
     var body: some View {
         GeometryReader { geo in
@@ -69,32 +33,8 @@ struct SetupView: View {
             }
         }
         .ignoresSafeArea()
-        .fullScreenCover(item: $destination) { dest in
-            switch dest {
-            case .pairing(let d):
-                PairingView(device: d) { success, newCertKey in
-                    if success {
-                        var updated = d
-                        if let key = newCertKey, !key.isEmpty, key != d.ip {
-                            updated.mac = key
-                        }
-                        KeychainHelper.saveStr(updated.certKey, key: "mibox_certkey")
-                        destination = .remote(updated, nil)
-                    } else {
-                        destination = nil
-                    }
-                }
-            case .remote(let d, let svc):
-                RemoteView(device: d, apkService: svc)
-                    .interactiveDismissDisabled(true)  // swipe down ile kapanmasın
-            }
-        }
         .onAppear {
-            // Fix 4: network değişimini dinle
-            discovery.onNetworkChange = {
-                // Wi-Fi değişti — cache geçersiz, yeniden tara
-                Task { await tryAutoConnect() }
-            }
+            discovery.onNetworkChange = { Task { await tryAutoConnect() } }
             discovery.startMonitoringNetwork()
             Task { await tryAutoConnect() }
         }
@@ -102,7 +42,6 @@ struct SetupView: View {
             discovery.stop()
             discovery.stopMonitoringNetwork()
         }
-        .navigationBarHidden(true)
         .alert("Manuel IP Gir", isPresented: $showManualEntry) {
             TextField("192.168.x.x", text: $manualIP)
                 .keyboardType(.numbersAndPunctuation)
@@ -191,28 +130,24 @@ struct SetupView: View {
         if device.hasCert {
             launchRemote(device)
         } else {
-            destination = .pairing(device)
+            onPairing(device)
         }
     }
 
     private func repairDevice(_ device: DiscoveredDevice) {
-        // Önce autoconnect'i durdur — race condition önleme
         discovery.stop()
         Task {
-            // Lock'u al — artık hiçbir paralel akış destination set edemez
             _ = await connectionLock.tryAcquire()
             KeychainHelper.deleteCertAndKey(certKey: device.certKey)
             isAutoConnecting = false
-            destination = .pairing(device)
+            onPairing(device)
         }
     }
 
     private func launchRemote(_ device: DiscoveredDevice) {
         KeychainHelper.saveStr(device.ip, key: "mibox_ip")
         KeychainHelper.saveStr(device.certKey, key: "mibox_certkey")
-        // APK bağlantısı RemoteView içinde yönetiliyor (connectContinuous).
-        // SetupView'da APK probe yapmıyoruz — hız ve doğruluk için.
-        destination = .remote(device, nil)
+        onRemote(device)
     }
 
     // MARK: - Auto-connect

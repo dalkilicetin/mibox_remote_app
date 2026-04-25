@@ -3,13 +3,18 @@ import Combine
 import Network
 
 struct RemoteView: View {
-    // @State: pairing sonrası certKey (MAC) güncellenebilmeli
     @State private var device: DiscoveredDevice
     let apkService: MiBoxService?
+    var onDismiss:     () -> Void = {}
+    var onNeedPairing: () -> Void = {}
 
-    init(device: DiscoveredDevice, apkService: MiBoxService?) {
+    init(device: DiscoveredDevice, apkService: MiBoxService?,
+         onDismiss: @escaping () -> Void = {},
+         onNeedPairing: @escaping () -> Void = {}) {
         _device = State(initialValue: device)
         self.apkService = apkService
+        self.onDismiss = onDismiss
+        self.onNeedPairing = onNeedPairing
     }
 
     @StateObject private var atv = AtvRemoteService()
@@ -18,9 +23,7 @@ struct RemoteView: View {
     @State private var logs: [String] = []
     @State private var selectedTab = 0
     @State private var isReconnecting = false
-    @State private var showPairing = false
     @State private var isPairingInProgress = false
-    @Environment(\.dismiss) private var dismiss
 
     private var atvConnected: Bool { atv.isConnected }
     private var apkConnected: Bool { apk.isConnected }
@@ -43,36 +46,9 @@ struct RemoteView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .ignoresSafeArea()
-        .navigationBarHidden(true)
         .task { await initAtv() }
         .task { startApkContinuous() }
         .onDisappear { apk.disconnect() }
-        // Cert invalid → pairing sheet otomatik açılır
-        .sheet(isPresented: $showPairing) {
-            NavigationStack {
-                PairingView(device: device) { success, newCertKey in
-                    showPairing = false
-                    isPairingInProgress = false
-                    atv.setPairing(false)
-                    if success {
-                        // Risk 1 fix: certKey'i device'a uygula
-                        // Böylece initAtv() doğru key ile loadIdentity yapabilir
-                        if let key = newCertKey, !key.isEmpty {
-                            // MAC ise device.mac set et, değilse IP kalır
-                            if key != device.ip {
-                                device.mac = key
-                            }
-                            // UserDefaults'a yeni certkey kaydet
-                            KeychainHelper.saveStr(key, key: "mibox_certkey")
-                        }
-                        Task {
-                            try? await Task.sleep(for: .milliseconds(300))
-                            await initAtv()
-                        }
-                    }
-                }
-            }
-        }
     }
 
     // MARK: - APK connect
@@ -135,7 +111,7 @@ struct RemoteView: View {
 
             Spacer()
             Text(device.ip).font(.system(size: 10)).foregroundColor(Color(hex: "4A5568"))
-            Button(action: { dismiss() }) {
+            Button(action: { onDismiss() }) {
                 Image(systemName: "xmark")
                     .foregroundColor(Color(hex: "4A5568"))
                     .font(.system(size: 13))
@@ -260,7 +236,6 @@ struct RemoteView: View {
         // Cert invalid gelince: eski cert'i sil, pairing sheet aç
         atv.onCertInvalid = {
             Task { @MainActor in
-                // Fix 3: pairing lock — zaten açıksa ignore et
                 guard !self.isPairingInProgress else {
                     self.addLog("ℹ️ Pairing zaten açık, ikinci tetiklenme yoksayıldı")
                     return
@@ -269,15 +244,15 @@ struct RemoteView: View {
                 KeychainHelper.deleteCertAndKey(certKey: self.device.certKey)
                 self.isReconnecting = false
                 self.isPairingInProgress = true
-                self.atv.setPairing(true)   // Fix 4: pairing sırasında reconnect blokla
-                self.showPairing = true
+                self.atv.setPairing(true)
+                self.onNeedPairing()
             }
         }
 
         guard let identity = KeychainHelper.loadIdentity(certKey: device.certKey) else {
             addLog("❌ Sertifika bulunamadı — yeniden eşleştirme gerekiyor")
             isReconnecting = false
-            showPairing = true
+            onNeedPairing()
             return
         }
         atv.setIdentity(identity)
@@ -286,8 +261,7 @@ struct RemoteView: View {
         for attempt in 1...3 {
             ok = await atv.connect(ip: device.ip, port: device.remotePort)
             if ok { break }
-            // Cert hatası onCertInvalid'ı tetikledi — döngüyü kes
-            if showPairing { isReconnecting = false; return }
+            if isPairingInProgress { isReconnecting = false; return }
             addLog("Bağlantı denemesi \(attempt) başarısız, bekleniyor...")
             if attempt < 3 { try? await Task.sleep(nanoseconds: 2_000_000_000) }
         }

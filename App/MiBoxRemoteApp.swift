@@ -4,8 +4,7 @@ import SwiftUI
 struct MiBoxRemoteApp: App {
     var body: some Scene {
         WindowGroup {
-            SetupView()
-                .preferredColorScheme(.dark)
+            RootView()
         }
     }
 }
