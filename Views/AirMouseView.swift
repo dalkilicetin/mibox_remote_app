@@ -102,10 +102,15 @@ struct AirMouseView: View {
         VStack(spacing: 0) {
             debugBar(geo: geo)
             toggleButton(geo: geo)
+
             mainArea(geo: geo)
-            actionButtons(geo: geo)
-            keyboardButton(geo: geo)
-            sensitivitySlider(geo: geo)
+                .frame(maxHeight: .infinity)
+
+            VStack(spacing: geo.size.height * 0.008) {
+                actionButtons(geo: geo)
+                keyboardButton(geo: geo)
+                sensitivitySlider(geo: geo)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -242,7 +247,6 @@ struct AirMouseView: View {
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.greenOk))
         }
         .padding(.horizontal, geo.size.width * 0.03)
-        .padding(.top, geo.size.height * 0.008)
     }
 
     private func sensitivitySlider(geo: GeometryProxy) -> some View {
