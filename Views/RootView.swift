@@ -48,5 +48,6 @@ struct RootView: View {
         }
         .ignoresSafeArea()
         .preferredColorScheme(.dark)
+        .statusBarHidden(false)
     }
 }
