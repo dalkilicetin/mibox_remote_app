@@ -73,7 +73,7 @@ struct AirMouseView: View {
 
     // MARK: - Tab bar
 
-    private var tabBar: some View { let _ = 0; return HStack(spacing: 0) -> some View {
+    private var tabBar: some View {
         HStack(spacing: 0) {
             ForEach(Array(["Air Mouse", "Kalibrasyon"].enumerated()), id: \.offset) { idx, name in
                 Button(action: { selectedTab = idx }) {

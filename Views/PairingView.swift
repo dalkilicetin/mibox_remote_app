@@ -13,27 +13,26 @@ struct PairingView: View {
             Color.appBg.ignoresSafeArea()
             ScrollView {
                 VStack(spacing: 24) {
-                        Text("TV Eşleştirme")
-                            .font(.headline).foregroundColor(.white)
-                        Text(device.ip)
-                            .font(.system(size: 12, design: .monospaced)).foregroundColor(.gray)
+                    Text("TV Eşleştirme")
+                        .font(.headline).foregroundColor(.white)
+                    Text(device.ip)
+                        .font(.system(size: 12, design: .monospaced)).foregroundColor(.gray)
 
-                        Image(systemName: "link")
-                            .font(.system(size: min(56, 56)))
-                            .foregroundColor(.redAccent)
+                    Image(systemName: "link")
+                        .font(.system(size: 56))
+                        .foregroundColor(.redAccent)
 
-                        Text(vm.status).font(.body).foregroundColor(.white).multilineTextAlignment(.center)
+                    Text(vm.status).font(.body).foregroundColor(.white).multilineTextAlignment(.center)
 
-                        if vm.waitingPin {
-                            pinSection()
-                        } else if !vm.status.contains("Hata") && !vm.status.contains("kurulamadı") {
-                            ProgressView().tint(.redAccent)
-                        }
-
-                        if !vm.logs.isEmpty { logBox }
+                    if vm.waitingPin {
+                        pinSection()
+                    } else if !vm.status.contains("Hata") && !vm.status.contains("kurulamadı") {
+                        ProgressView().tint(.redAccent)
                     }
-                    .padding(24)
+
+                    if !vm.logs.isEmpty { logBox }
                 }
+                .padding(24)
             }
         }
         .ignoresSafeArea()
