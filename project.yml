@@ -23,6 +23,21 @@ targets:
     platform: iOS
     info:
       path: Info.plist
+      properties:
+        UILaunchScreen:
+          UIImageName: AppIcon
+        NSLocalNetworkUsageDescription: "Ağdaki Mi Box cihazlarını keşfetmek için yerel ağ erişimi gereklidir."
+        NSBonjourServices:
+          - _androidtvremote._tcp
+          - _androidtvremote2._tcp
+        NSMotionUsageDescription: "Air Mouse özelliği için hareket sensörlerine erişim gereklidir."
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIViewControllerBasedStatusBarAppearance: false
+        UIStatusBarStyle: UIStatusBarStyleLightContent
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations: {}
     sources:
       - path: App
       - path: Models
