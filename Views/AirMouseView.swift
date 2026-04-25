@@ -71,7 +71,7 @@ struct AirMouseView: View {
             .onAppear   { startSensors() }
             .onDisappear { stopSensors() }
         }
-        .ignoresSafeArea(edges: .bottom)
+        .ignoresSafeArea()
     }
 
     // MARK: - Tab bar

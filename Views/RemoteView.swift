@@ -42,7 +42,7 @@ struct RemoteView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .ignoresSafeArea(edges: .bottom)
+        .ignoresSafeArea()
         .navigationBarHidden(true)
         .task { await initAtv() }
         .task { startApkContinuous() }

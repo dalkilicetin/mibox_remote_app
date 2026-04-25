@@ -90,8 +90,10 @@ struct SetupView: View {
                                 destination = nil
                             }
                         }
+                        .ignoresSafeArea()   // 🔥 destination forced fullscreen
                     case .remote(let d, let svc):
                         RemoteView(device: d, apkService: svc)
+                            .ignoresSafeArea()   // 🔥 destination forced fullscreen
                     }
                 }
             }
