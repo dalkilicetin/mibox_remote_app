@@ -30,18 +30,15 @@ struct RemoteView: View {
     private var hasApk: Bool { apk.isConnected }
 
     var body: some View {
-        GeometryReader { _ in
-            ZStack {
-                Color.appBg.ignoresSafeArea()
-                VStack(spacing: 0) {
-                    statusBar
-                    if !atvConnected { reconnectBanner }
-                    tabBar
-                    tabContent
-                        .frame(maxHeight: .infinity)
-                        .layoutPriority(1)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        ZStack {
+            Color.appBg.ignoresSafeArea()
+            VStack(spacing: 0) {
+                statusBar
+                if !atvConnected { reconnectBanner }
+                tabBar
+                tabContent
+                    .frame(maxHeight: .infinity)
+                    .layoutPriority(1)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }

@@ -22,21 +22,18 @@ struct SetupView: View {
     private var connectionLock = ConnectionLock()
 
     var body: some View {
-        GeometryReader { geo in
-            ZStack {
-                Color.appBg.ignoresSafeArea()
-                VStack(spacing: 0) {
-                    headerView(geo: geo)
-                    if discovery.isScanning {
-                        ProgressView().progressViewStyle(.linear).tint(.redAccent)
-                            .padding(.horizontal, 24).padding(.bottom, 8)
-                    }
-                    deviceList
-                        .frame(maxHeight: .infinity)
-                        .layoutPriority(1)
-                    bottomBar()
+        ZStack {
+            Color.appBg.ignoresSafeArea()
+            VStack(spacing: 0) {
+                headerView()
+                if discovery.isScanning {
+                    ProgressView().progressViewStyle(.linear).tint(.redAccent)
+                        .padding(.horizontal, 24).padding(.bottom, 8)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                deviceList
+                    .frame(maxHeight: .infinity)
+                    .layoutPriority(1)
+                bottomBar()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -59,10 +56,10 @@ struct SetupView: View {
     }
 
     @ViewBuilder
-    private func headerView(geo: GeometryProxy) -> some View {
+    private func headerView() -> some View {
         VStack(spacing: 6) {
             Image(systemName: "tv")
-                .font(.system(size: min(geo.size.width * 0.13, 52)))
+                .font(.system(size: 52))
                 .foregroundColor(.redAccent)
             Text("Mi Box Remote").font(.title.bold()).foregroundColor(.white)
             if isAutoConnecting {

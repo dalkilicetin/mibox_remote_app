@@ -11,83 +11,82 @@ struct TouchpadView: View {
     @State private var swipeCooldown = false
 
     var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .bottom) {
-                VStack(spacing: 8) {
-                    touchpadArea(geo: geo)
-                    hScrollBar(geo: geo)
-                    clickButton(geo: geo)
-                    keyboardButton(geo: geo)
-                    actionButtons(geo: geo)
-                }
-                if kbdVisible {
-                    KeyboardPopup(text: $kbdText, isVisible: $kbdVisible,
-                                  onSend: sendText,
-                                  onBackspace: { apk.sendKey(67) },
-                                  onEnter: { apk.sendKey(66) })
-                }
+        ZStack(alignment: .bottom) {
+            Color.appBg.ignoresSafeArea()
+            VStack(spacing: 8) {
+                touchpadArea()
+                hScrollBar()
+                clickButton()
+                keyboardButton()
+                actionButtons()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color.appBg)
+            if kbdVisible {
+                KeyboardPopup(text: $kbdText, isVisible: $kbdVisible,
+                              onSend: sendText,
+                              onBackspace: { apk.sendKey(67) },
+                              onEnter: { apk.sendKey(66) })
+            }
         }
+        .ignoresSafeArea()
     }
 
     // MARK: - Touchpad area
 
-    private func touchpadArea(geo: GeometryProxy) -> some View {
+    private func touchpadArea() -> some View {
         HStack(spacing: 0) {
             TouchpadRepresentable(apk: apk, atv: atv)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(hex: "0d1117"))
                 .cornerRadius(16, corners: [.topLeft, .bottomLeft])
 
-            dpadScrollBar(geo: geo)
-            Spacer().frame(width: geo.size.width * 0.02)
-            swipeScrollBar(geo: geo)
+            dpadScrollBar()
+            Spacer().frame(width: 12)
+            swipeScrollBar()
         }
         .frame(maxWidth: .infinity)
         .frame(maxHeight: .infinity).layoutPriority(1)
-        .padding(.horizontal, geo.size.width * 0.03)
+        .padding(.horizontal, 16)
         .padding(.top, 8)
         .overlay(
             RoundedRectangle(cornerRadius: 16)
                 .stroke(Color.blueDeep, lineWidth: 2)
-                .padding(.horizontal, geo.size.width * 0.03)
+                .padding(.horizontal, 16)
                 .padding(.top, 8)
         )
     }
 
-    private func dpadScrollBar(geo: GeometryProxy) -> some View {
+    private func dpadScrollBar() -> some View {
         VStack(spacing: 0) {
             Button(action: { sendKey(AtvKey.dpadUp) }) {
                 Image(systemName: "chevron.up").foregroundColor(.gray)
-                    .padding(geo.size.width * 0.02)
+                    .padding(12)
             }
             Rectangle().fill(Color.blueDeep).frame(width: 4).frame(maxHeight: .infinity)
             Button(action: { sendKey(AtvKey.dpadDown) }) {
                 Image(systemName: "chevron.down").foregroundColor(.gray)
-                    .padding(geo.size.width * 0.02)
+                    .padding(12)
             }
         }
-        .frame(width: geo.size.width * 0.09)
+        .frame(width: 36)
         .background(Color(hex: "0d1117"))
     }
 
-    private func swipeScrollBar(geo: GeometryProxy) -> some View {
+    private func swipeScrollBar() -> some View {
         VStack(spacing: 0) {
             Button(action: { sendSwipe(1) }) {
                 Image(systemName: "chevron.up").foregroundColor(.greenOk)
-                    .padding(geo.size.width * 0.015)
+                    .padding(10)
             }
             Text("S").font(.system(size: 9)).foregroundColor(.greenOk)
             Rectangle().fill(Color.greenOk).frame(width: 4).frame(maxHeight: .infinity)
             Text("W").font(.system(size: 9)).foregroundColor(.greenOk)
             Button(action: { sendSwipe(-1) }) {
                 Image(systemName: "chevron.down").foregroundColor(.greenOk)
-                    .padding(geo.size.width * 0.015)
+                    .padding(10)
             }
         }
-        .frame(width: geo.size.width * 0.09)
+        .frame(width: 36)
         .background(Color(hex: "0d1117"))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.greenOk, lineWidth: 2))
         .cornerRadius(16)
@@ -97,28 +96,28 @@ struct TouchpadView: View {
         }.onEnded { _ in swipeAccum = 0 })
     }
 
-    private func hScrollBar(geo: GeometryProxy) -> some View {
+    private func hScrollBar() -> some View {
         HStack {
             Button(action: { sendKey(AtvKey.dpadLeft) }) {
                 Image(systemName: "chevron.left").foregroundColor(.gray)
-                    .padding(.horizontal, geo.size.width * 0.02)
+                    .padding(.horizontal, 12)
             }
             Spacer()
             Rectangle().fill(Color.blueDeep).frame(width: 60, height: 4)
             Spacer()
             Button(action: { sendKey(AtvKey.dpadRight) }) {
                 Image(systemName: "chevron.right").foregroundColor(.gray)
-                    .padding(.horizontal, geo.size.width * 0.02)
+                    .padding(.horizontal, 12)
             }
         }
         .frame(height: 52)
         .background(Color(hex: "0d1117"))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.blueDeep, lineWidth: 2))
         .cornerRadius(16)
-        .padding(.horizontal, geo.size.width * 0.03)
+        .padding(.horizontal, 16)
     }
 
-    private func clickButton(geo: GeometryProxy) -> some View {
+    private func clickButton() -> some View {
         Button(action: {
             apk.tap()
             if atv.isConnected { atv.sendKey(AtvKey.dpadCenter) }
@@ -126,7 +125,7 @@ struct TouchpadView: View {
         }) {
             HStack(spacing: 8) {
                 Image(systemName: "cursorarrow.click").foregroundColor(.greenOk)
-                Text("Tikla").foregroundColor(.greenOk).font(.system(size: geo.size.width * 0.038))
+                Text("Tikla").foregroundColor(.greenOk).font(.system(size: 15))
             }
             .frame(maxWidth: .infinity)
             .frame(height: 56)
@@ -134,40 +133,40 @@ struct TouchpadView: View {
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.greenOk))
             .cornerRadius(12)
         }
-        .padding(.horizontal, geo.size.width * 0.03)
+        .padding(.horizontal, 16)
     }
 
-    private func keyboardButton(geo: GeometryProxy) -> some View {
+    private func keyboardButton() -> some View {
         Button(action: { kbdVisible = true }) {
             Label("Klavye", systemImage: "keyboard").foregroundColor(.greenOk)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.greenOk))
         }
-        .padding(.horizontal, geo.size.width * 0.03)
+        .padding(.horizontal, 16)
     }
 
-    private func actionButtons(geo: GeometryProxy) -> some View {
+    private func actionButtons() -> some View {
         VStack(spacing: 6) {
-            HStack(spacing: geo.size.width * 0.02) {
-                tpBtn(icon: "arrow.backward", label: "Geri", geo: geo) { sendKey(AtvKey.back) }
-                tpBtn(icon: "house",          label: "Home", geo: geo) { sendKey(AtvKey.home) }
-                tpBtn(icon: "play.fill",      label: "Play", geo: geo) { sendKey(AtvKey.playPause) }
+            HStack(spacing: 12) {
+                tpBtn(icon: "arrow.backward", label: "Geri") { sendKey(AtvKey.back) }
+                tpBtn(icon: "house",          label: "Home") { sendKey(AtvKey.home) }
+                tpBtn(icon: "play.fill",      label: "Play") { sendKey(AtvKey.playPause) }
             }
-            HStack(spacing: geo.size.width * 0.02) {
-                tpBtn(icon: "speaker.plus",   label: "Ses+", geo: geo) { sendKey(AtvKey.volumeUp) }
-                tpBtn(icon: "speaker.minus",  label: "Ses-", geo: geo) { sendKey(AtvKey.volumeDown) }
+            HStack(spacing: 12) {
+                tpBtn(icon: "speaker.plus",   label: "Ses+") { sendKey(AtvKey.volumeUp) }
+                tpBtn(icon: "speaker.minus",  label: "Ses-") { sendKey(AtvKey.volumeDown) }
             }
         }
-        .padding(.horizontal, geo.size.width * 0.03)
+        .padding(.horizontal, 16)
         .padding(.bottom, 8)
     }
 
-    private func tpBtn(icon: String, label: String, geo: GeometryProxy, action: @escaping () -> Void) -> some View {
+    private func tpBtn(icon: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 4) {
-                Image(systemName: icon).font(.system(size: geo.size.width * 0.04))
-                Text(label).font(.system(size: geo.size.width * 0.03))
+                Image(systemName: icon).font(.system(size: 16))
+                Text(label).font(.system(size: 16))
             }
             .foregroundColor(.white)
             .frame(maxWidth: .infinity)

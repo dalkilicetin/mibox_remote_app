@@ -9,35 +9,34 @@ struct PairingView: View {
     @StateObject private var vm = PairingVM()
 
     var body: some View {
-        GeometryReader { geo in
-            ZStack {
-                Color.appBg.ignoresSafeArea()
-                ScrollView {
-                    VStack(spacing: 24) {
+        ZStack {
+            Color.appBg.ignoresSafeArea()
+            ScrollView {
+                VStack(spacing: 24) {
                         Text("TV Eşleştirme")
                             .font(.headline).foregroundColor(.white)
                         Text(device.ip)
                             .font(.system(size: 12, design: .monospaced)).foregroundColor(.gray)
 
                         Image(systemName: "link")
-                            .font(.system(size: min(geo.size.width * 0.14, 56)))
+                            .font(.system(size: min(56, 56)))
                             .foregroundColor(.redAccent)
 
                         Text(vm.status).font(.body).foregroundColor(.white).multilineTextAlignment(.center)
 
                         if vm.waitingPin {
-                            pinSection(geo: geo)
+                            pinSection()
                         } else if !vm.status.contains("Hata") && !vm.status.contains("kurulamadı") {
                             ProgressView().tint(.redAccent)
                         }
 
                         if !vm.logs.isEmpty { logBox }
                     }
-                    .padding(geo.size.width * 0.06)
+                    .padding(24)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .ignoresSafeArea()
         .navigationBarHidden(true)
         .task { await vm.start(device: device) }
         .onReceive(vm.$pairingSuccess) { success in
@@ -47,10 +46,10 @@ struct PairingView: View {
 
     // MARK: - PIN section
 
-    private func pinSection(geo: GeometryProxy) -> some View {
+    private func pinSection() -> some View {
         VStack(spacing: 16) {
             TextField("XXXXXX", text: $vm.pin)
-                .font(.system(size: min(geo.size.width * 0.08, 32), weight: .bold, design: .monospaced))
+                .font(.system(size: min(32, 32), weight: .bold, design: .monospaced))
                 .tracking(8)
                 .multilineTextAlignment(.center)
                 .foregroundColor(.white)

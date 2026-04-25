@@ -42,47 +42,44 @@ struct AirMouseView: View {
     ]
 
     var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .bottom) {
-                Color.appBg.ignoresSafeArea()
-                VStack(spacing: 0) {
-                    tabBar(geo: geo)
-                    Group {
-                        if selectedTab == 0 {
-                            airMousePage(geo: geo)
-                        } else {
-                            calibrationPage(geo: geo)
-                        }
+        ZStack(alignment: .bottom) {
+            Color.appBg.ignoresSafeArea()
+            VStack(spacing: 0) {
+                tabBar
+                Group {
+                    if selectedTab == 0 {
+                        airMousePage
+                    } else {
+                        calibrationPage
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if kbdVisible {
-                    KeyboardPopup(
-                        text: $kbdText,
-                        isVisible: $kbdVisible,
-                        onSend: sendText,
-                        onBackspace: { apk.sendKey(67) },
-                        onEnter:     { apk.sendKey(66) }
-                    )
-                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .onAppear   { startSensors() }
-            .onDisappear { stopSensors() }
+            if kbdVisible {
+                KeyboardPopup(
+                    text: $kbdText,
+                    isVisible: $kbdVisible,
+                    onSend: sendText,
+                    onBackspace: { apk.sendKey(67) },
+                    onEnter:     { apk.sendKey(66) }
+                )
+            }
         }
         .ignoresSafeArea()
+        .onAppear   { startSensors() }
+        .onDisappear { stopSensors() }
     }
 
     // MARK: - Tab bar
 
-    private func tabBar(geo: GeometryProxy) -> some View {
+    private var tabBar: some View { let _ = 0; return HStack(spacing: 0) -> some View {
         HStack(spacing: 0) {
             ForEach(Array(["Air Mouse", "Kalibrasyon"].enumerated()), id: \.offset) { idx, name in
                 Button(action: { selectedTab = idx }) {
                     VStack(spacing: 4) {
                         Text(name)
-                            .font(.system(size: geo.size.width * 0.032))
+                            .font(.system(size: 13))
                             .foregroundColor(selectedTab == idx ? .redAccent : .gray)
                         Rectangle()
                             .fill(selectedTab == idx ? Color.redAccent : .clear)
@@ -98,41 +95,41 @@ struct AirMouseView: View {
 
     // MARK: - Air Mouse Page
 
-    private func airMousePage(geo: GeometryProxy) -> some View {
+    private func airMousePage() -> some View {
         VStack(spacing: 0) {
-            debugBar(geo: geo)
-            toggleButton(geo: geo)
+            debugBar()
+            toggleButton()
 
-            mainArea(geo: geo)
+            mainArea()
                 .frame(maxHeight: .infinity)
                 .layoutPriority(1)
 
             VStack(spacing: 4) {
-                actionButtons(geo: geo)
+                actionButtons()
                     .frame(height: 100)
-                keyboardButton(geo: geo)
+                keyboardButton()
                     .frame(height: 52)
-                sensitivitySlider(geo: geo)
+                sensitivitySlider()
                     .frame(height: 68)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func debugBar(geo: GeometryProxy) -> some View {
+    private func debugBar() -> some View {
         let calibStatus = engine.calibration.isReady
             ? "CAL:\(engine.calibration.pointCount)/9"
             : "DELTA"
         return Text("\(debugText) [\(calibStatus)]")
-            .font(.system(size: geo.size.width * 0.028, design: .monospaced))
+            .font(.system(size: 11, design: .monospaced))
             .foregroundColor(.greenOk)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, geo.size.width * 0.03)
+            .padding(.horizontal, 16)
             .padding(.vertical, 4)
             .background(Color.terminalBg)
     }
 
-    private func toggleButton(geo: GeometryProxy) -> some View {
+    private func toggleButton() -> some View {
         Button(action: toggleAir) {
             Text(airOn ? "Air Modu" : "Kumanda Modu")
                 .foregroundColor(airOn ? .white : .redAccent)
@@ -142,25 +139,25 @@ struct AirMouseView: View {
                 .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.redAccent))
                 .cornerRadius(20)
         }
-        .padding(.horizontal, geo.size.width * 0.03)
+        .padding(.horizontal, 16)
         .padding(.top, 6)
     }
 
-    private func mainArea(geo: GeometryProxy) -> some View {
-        HStack(spacing: geo.size.width * 0.02) {
-            tapArea(geo: geo)
-            swipeBar(geo: geo)
+    private func mainArea() -> some View {
+        HStack(spacing: 12) {
+            tapArea()
+            swipeBar()
         }
-        .padding(.horizontal, geo.size.width * 0.03)
+        .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .frame(maxHeight: .infinity)
     }
 
-    private func tapArea(geo: GeometryProxy) -> some View {
+    private func tapArea() -> some View {
         ZStack {
             Color.redAccent.cornerRadius(24)
             Text("TIKLA")
-                .font(.system(size: geo.size.width * 0.07, weight: .bold))
+                .font(.system(size: 28, weight: .bold))
                 .foregroundColor(.white)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -201,19 +198,19 @@ struct AirMouseView: View {
         )
     }
 
-    private func swipeBar(geo: GeometryProxy) -> some View {
+    private func swipeBar() -> some View {
         VStack(spacing: 0) {
             Button(action: { sendSwipe(1) }) {
                 Image(systemName: "chevron.up").foregroundColor(.redAccent)
-                    .padding(geo.size.width * 0.015)
+                    .padding(10)
             }
             Rectangle().fill(Color.blueDeep).frame(width: 4).frame(maxHeight: .infinity)
             Button(action: { sendSwipe(-1) }) {
                 Image(systemName: "chevron.down").foregroundColor(.redAccent)
-                    .padding(geo.size.width * 0.015)
+                    .padding(10)
             }
         }
-        .frame(width: geo.size.width * 0.09)
+        .frame(width: 36)
         .background(Color(hex: "0d1117"))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.blueDeep, lineWidth: 2))
         .cornerRadius(16)
@@ -228,21 +225,21 @@ struct AirMouseView: View {
         )
     }
 
-    private func actionButtons(geo: GeometryProxy) -> some View {
+    private func actionButtons() -> some View {
         VStack(spacing: 6) {
-            HStack(spacing: geo.size.width * 0.02) {
-                airBtn(icon: "arrow.backward", label: "Geri", geo: geo) { sendKey(AtvKey.back) }
-                airBtn(icon: "house",          label: "Home", geo: geo) { sendKey(AtvKey.home) }
+            HStack(spacing: 12) {
+                airBtn(icon: "arrow.backward", label: "Geri") { sendKey(AtvKey.back) }
+                airBtn(icon: "house",          label: "Home") { sendKey(AtvKey.home) }
             }
-            HStack(spacing: geo.size.width * 0.02) {
-                airBtn(icon: "speaker.plus",  label: "Ses+", geo: geo) { sendKey(AtvKey.volumeUp) }
-                airBtn(icon: "speaker.minus", label: "Ses-", geo: geo) { sendKey(AtvKey.volumeDown) }
+            HStack(spacing: 12) {
+                airBtn(icon: "speaker.plus",  label: "Ses+") { sendKey(AtvKey.volumeUp) }
+                airBtn(icon: "speaker.minus", label: "Ses-") { sendKey(AtvKey.volumeDown) }
             }
         }
-        .padding(.horizontal, geo.size.width * 0.03)
+        .padding(.horizontal, 16)
     }
 
-    private func keyboardButton(geo: GeometryProxy) -> some View {
+    private func keyboardButton() -> some View {
         Button(action: { kbdVisible = true }) {
             Label("Klavye", systemImage: "keyboard")
                 .foregroundColor(.greenOk)
@@ -250,32 +247,32 @@ struct AirMouseView: View {
                 .padding(.vertical, 12)
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.greenOk))
         }
-        .padding(.horizontal, geo.size.width * 0.03)
+        .padding(.horizontal, 16)
     }
 
-    private func sensitivitySlider(geo: GeometryProxy) -> some View {
+    private func sensitivitySlider() -> some View {
         VStack(spacing: 4) {
             HStack {
                 Text("Hassasiyet")
-                    .font(.system(size: geo.size.width * 0.03)).foregroundColor(.gray)
+                    .font(.system(size: 16)).foregroundColor(.gray)
                 Spacer()
                 Text("\(Int(sensitivity))")
-                    .font(.system(size: geo.size.width * 0.03, weight: .bold)).foregroundColor(.redAccent)
+                    .font(.system(size: 16, weight: .bold)).foregroundColor(.redAccent)
             }
             Slider(value: $sensitivity, in: 5...150).tint(.redAccent)
         }
-        .padding(geo.size.width * 0.03)
+        .padding(16)
         .background(Color.terminalBg)
         .cornerRadius(10)
-        .padding(.horizontal, geo.size.width * 0.03)
+        .padding(.horizontal, 16)
         .padding(.vertical, 6)
     }
 
-    private func airBtn(icon: String, label: String, geo: GeometryProxy, action: @escaping () -> Void) -> some View {
+    private func airBtn(icon: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 6) {
-                Image(systemName: icon).font(.system(size: geo.size.width * 0.042))
-                Text(label).font(.system(size: geo.size.width * 0.032))
+                Image(systemName: icon).font(.system(size: 18))
+                Text(label).font(.system(size: 13))
             }
             .foregroundColor(.white)
             .frame(maxWidth: .infinity)
@@ -288,19 +285,19 @@ struct AirMouseView: View {
 
     // MARK: - Calibration Page
 
-    private func calibrationPage(geo: GeometryProxy) -> some View {
+    private func calibrationPage() -> some View {
         VStack(spacing: 12) {
             Text(activePtId == nil
                  ? "1. Nokta seç  2. Touchpad ile cursoru götür  3. Kaydet"
                  : "'\(calibLabels[activePtId!])': cursoru götür → Kaydet bas")
-                .font(.system(size: geo.size.width * 0.03))
+                .font(.system(size: 16))
                 .foregroundColor(.gray)
                 .multilineTextAlignment(.center)
-                .padding(.horizontal, geo.size.width * 0.04)
+                .padding(.horizontal, 16)
                 .padding(.top, 16)
 
             Text("Kalibrasyon: \(engine.calibration.pointCount)/9 \(engine.calibration.isReady ? "✓ Hazır" : "– Eksik")")
-                .font(.system(size: geo.size.width * 0.032, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(engine.calibration.isReady ? .greenOk : Color(hex: "fbbf24"))
 
             LazyVGrid(
@@ -308,16 +305,16 @@ struct AirMouseView: View {
                 spacing: 8
             ) {
                 ForEach(0..<9, id: \.self) { id in
-                    calibDot(id: id, geo: geo)
+                    calibDot(id: id)
                 }
             }
-            .padding(.horizontal, geo.size.width * 0.04)
+            .padding(.horizontal, 16)
 
             Button(action: saveCalibPoint) {
                 VStack(spacing: 4) {
-                    Text("Kaydet").font(.system(size: geo.size.width * 0.05, weight: .bold))
+                    Text("Kaydet").font(.system(size: 20, weight: .bold))
                     Text(activePtId != nil ? calibLabels[activePtId!] : "Önce nokta seç")
-                        .font(.system(size: geo.size.width * 0.03))
+                        .font(.system(size: 16))
                 }
                 .foregroundColor(activePtId != nil ? .white : Color(hex: "666666"))
                 .frame(maxWidth: .infinity)
@@ -326,37 +323,37 @@ struct AirMouseView: View {
                 .cornerRadius(20)
             }
             .disabled(activePtId == nil)
-            .padding(.horizontal, geo.size.width * 0.04)
+            .padding(.horizontal, 16)
 
             Button(action: {
                 engine.calibration.reset()
                 activePtId = nil
             }) {
                 Text("Kalibrasyonu Sıfırla")
-                    .font(.system(size: geo.size.width * 0.032))
+                    .font(.system(size: 13))
                     .foregroundColor(.gray)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray.opacity(0.4)))
             }
-            .padding(.horizontal, geo.size.width * 0.04)
+            .padding(.horizontal, 16)
 
             Spacer()
         }
     }
 
-    private func calibDot(id: Int, geo: GeometryProxy) -> some View {
+    private func calibDot(id: Int) -> some View {
         let isSaved  = engine.calibration.points.contains { $0.id == id }
         let isActive = activePtId == id
         let parts    = calibLabels[id].components(separatedBy: " ")
 
         return Button(action: { activePtId = id }) {
             VStack(spacing: 3) {
-                Text(parts.first ?? "").font(.system(size: geo.size.width * 0.03, weight: .semibold))
-                Text(parts.dropFirst().joined(separator: " ")).font(.system(size: geo.size.width * 0.025))
+                Text(parts.first ?? "").font(.system(size: 16, weight: .semibold))
+                Text(parts.dropFirst().joined(separator: " ")).font(.system(size: 10))
                 if isSaved {
                     Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: geo.size.width * 0.035))
+                        .font(.system(size: 14))
                 }
             }
             .foregroundColor(isActive ? .redAccent : isSaved ? .greenOk : .gray)
