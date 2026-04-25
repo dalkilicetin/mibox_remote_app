@@ -48,9 +48,9 @@ struct AirMouseView: View {
                 tabBar
                 Group {
                     if selectedTab == 0 {
-                        airMousePage
+                        airMousePage()
                     } else {
-                        calibrationPage
+                        calibrationPage()
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
