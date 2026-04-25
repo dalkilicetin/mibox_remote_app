@@ -66,7 +66,7 @@ struct AirMouseView: View {
                 )
             }
         }
-        .ignoresSafeArea()
+        .ignoresSafeArea(edges: .bottom)
         .onAppear   { startSensors() }
         .onDisappear { stopSensors() }
     }

@@ -35,7 +35,7 @@ struct PairingView: View {
                 .padding(24)
             }
         }
-        .ignoresSafeArea()
+        .ignoresSafeArea(edges: .bottom)
         .navigationBarHidden(true)
         .task { await vm.start(device: device) }
         .onReceive(vm.$pairingSuccess) { success in

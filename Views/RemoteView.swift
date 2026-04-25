@@ -42,7 +42,7 @@ struct RemoteView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .ignoresSafeArea()
+        .ignoresSafeArea(edges: .bottom)
         .task { await initAtv() }
         .task { startApkContinuous() }
         .onDisappear { apk.disconnect() }

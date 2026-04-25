@@ -28,7 +28,7 @@ struct TouchpadView: View {
                               onEnter: { apk.sendKey(66) })
             }
         }
-        .ignoresSafeArea()
+        .ignoresSafeArea(edges: .bottom)
     }
 
     // MARK: - Touchpad area

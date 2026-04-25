@@ -14,7 +14,7 @@ struct RootView: View {
 
     var body: some View {
         ZStack {
-            Color.green.opacity(0.3).ignoresSafeArea()   // DEBUG ROOT
+            Color.appBg.ignoresSafeArea()
 
             switch screen {
             case .setup:
@@ -22,7 +22,6 @@ struct RootView: View {
                     onRemote:  { device in screen = .remote(device) },
                     onPairing: { device in screen = .pairing(device) }
                 )
-                .background(Color.red.opacity(0.3))   // DEBUG L1
 
             case .pairing(let device):
                 PairingView(device: device) { success, newCertKey in
@@ -37,7 +36,6 @@ struct RootView: View {
                         screen = .setup
                     }
                 }
-                .background(Color.blue.opacity(0.3))   // DEBUG L1
 
             case .remote(let device):
                 RemoteView(
@@ -46,10 +44,9 @@ struct RootView: View {
                     onDismiss:    { screen = .setup },
                     onNeedPairing: { screen = .pairing(device) }
                 )
-                .background(Color.yellow.opacity(0.3))   // DEBUG L1
             }
         }
-        .ignoresSafeArea()
+        .ignoresSafeArea(edges: .bottom)   // sadece alt — status bar korunur
         .preferredColorScheme(.dark)
     }
 }

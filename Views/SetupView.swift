@@ -37,7 +37,7 @@ struct SetupView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .ignoresSafeArea()
+        .ignoresSafeArea(edges: .bottom)
         .onAppear {
             discovery.onNetworkChange = { Task { await tryAutoConnect() } }
             discovery.startMonitoringNetwork()
