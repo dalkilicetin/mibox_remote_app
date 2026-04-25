@@ -51,43 +51,43 @@ struct SetupView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            GeometryReader { geo in
-                ZStack {
-                    Color.appBg.ignoresSafeArea()
-                    VStack(spacing: 0) {
-                        headerView(geo: geo)
-                        if discovery.isScanning {
-                            ProgressView().progressViewStyle(.linear).tint(.redAccent)
-                                .padding(.horizontal, geo.size.width * 0.06).padding(.bottom, 8)
-                        }
-                        deviceList
-                            .frame(maxHeight: .infinity)
-                            .layoutPriority(1)
-                        bottomBar(geo: geo)
+        GeometryReader { geo in
+            ZStack {
+                Color.appBg.ignoresSafeArea()
+                VStack(spacing: 0) {
+                    headerView(geo: geo)
+                    if discovery.isScanning {
+                        ProgressView().progressViewStyle(.linear).tint(.redAccent)
+                            .padding(.horizontal, geo.size.width * 0.06).padding(.bottom, 8)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    deviceList
+                        .frame(maxHeight: .infinity)
+                        .layoutPriority(1)
+                    bottomBar(geo: geo)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .fullScreenCover(item: $destination) { dest in
-                switch dest {
-                case .pairing(let d):
-                    PairingView(device: d) { success, newCertKey in
-                        if success {
-                            var updated = d
-                            if let key = newCertKey, !key.isEmpty, key != d.ip {
-                                updated.mac = key
-                            }
-                            KeychainHelper.saveStr(updated.certKey, key: "mibox_certkey")
-                            destination = .remote(updated, nil)
-                        } else {
-                            destination = nil
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .ignoresSafeArea()
+        .fullScreenCover(item: $destination) { dest in
+            switch dest {
+            case .pairing(let d):
+                PairingView(device: d) { success, newCertKey in
+                    if success {
+                        var updated = d
+                        if let key = newCertKey, !key.isEmpty, key != d.ip {
+                            updated.mac = key
                         }
+                        KeychainHelper.saveStr(updated.certKey, key: "mibox_certkey")
+                        destination = .remote(updated, nil)
+                    } else {
+                        destination = nil
                     }
-                case .remote(let d, let svc):
-                    RemoteView(device: d, apkService: svc)
                 }
+            case .remote(let d, let svc):
+                RemoteView(device: d, apkService: svc)
+                    .interactiveDismissDisabled(true)  // swipe down ile kapanmasın
             }
         }
         .onAppear {
