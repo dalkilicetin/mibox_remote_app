@@ -51,25 +51,22 @@ struct SetupView: View {
     }
 
     var body: some View {
-        ZStack {
-            Color.appBg.ignoresSafeArea()
-            VStack(spacing: 0) {
-                GeometryReader { geo in
-                    VStack(spacing: 0) {
-                        headerView(geo: geo)
-                        if discovery.isScanning {
-                            ProgressView().progressViewStyle(.linear).tint(.redAccent)
-                                .padding(.horizontal, geo.size.width * 0.06).padding(.bottom, 8)
-                        }
-                        deviceList
-                            .frame(maxHeight: .infinity)
-                            .layoutPriority(1)
-                        bottomBar(geo: geo)
+        GeometryReader { geo in
+            ZStack {
+                Color.appBg.ignoresSafeArea()
+                VStack(spacing: 0) {
+                    headerView(geo: geo)
+                    if discovery.isScanning {
+                        ProgressView().progressViewStyle(.linear).tint(.redAccent)
+                            .padding(.horizontal, geo.size.width * 0.06).padding(.bottom, 8)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    deviceList
+                        .frame(maxHeight: .infinity)
+                        .layoutPriority(1)
+                    bottomBar(geo: geo)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .ignoresSafeArea()
         .fullScreenCover(item: $destination) { dest in
