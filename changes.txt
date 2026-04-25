@@ -1,0 +1,1 @@
+ekrana oturmama problemi project.yml dosyası update edilerek çözüldü. bugFix giderildi.
