@@ -17,6 +17,7 @@ final class MiBoxService: ObservableObject {
     nonisolated static let defaultScreenH = 1080
 
     @Published var isConnected = false
+    var onLog: ((String) -> Void)?   // RemoteView'daki debug log'a yazar
     private(set) var screenW = MiBoxService.defaultScreenW
     private(set) var screenH = MiBoxService.defaultScreenH
     private(set) var cursorX = MiBoxService.defaultScreenW / 2
@@ -181,6 +182,8 @@ final class MiBoxService: ObservableObject {
     }
 
     func tap() {
+        let msg = "📱 APK tap() — isConnected=\(isConnected)"
+        print("[APK] \(msg)"); onLog?(msg)
         send(["type": "tap"])
     }
 

@@ -185,8 +185,9 @@ struct AirMouseView: View {
                     let moved = hypot(tapLast.x - tapStart.x, tapLast.y - tapStart.y)
                     let ms    = Int(Date().timeIntervalSince(tapTime) * 1000)
                     if moved < Self.TAP_MAX_MOVE && ms < Self.TAP_MAX_MS {
+                        print("[TAP] airOn=\(airOn) apk.isConnected=\(apk.isConnected)")
                         if airOn {
-                            apk.moveCursor(dx: 0, dy: 0)  // server cursor sync
+                            apk.moveCursor(dx: 0, dy: 0)
                             apk.tap()
                         } else {
                             sendKey(AtvKey.dpadCenter)

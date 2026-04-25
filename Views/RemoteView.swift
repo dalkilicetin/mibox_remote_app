@@ -224,6 +224,14 @@ struct RemoteView: View {
             }
         }
 
+        apk.onLog = { msg in
+            Task { @MainActor in
+                let ts = Calendar.current.component(.second, from: Date())
+                self.logs.append("[\(ts)s] [APK] \(msg)")
+                if self.logs.count > 200 { self.logs.removeFirst() }
+            }
+        }
+
         // Cert invalid gelince: eski cert'i sil, pairing sheet aç
         atv.onCertInvalid = {
             Task { @MainActor in
@@ -240,10 +248,21 @@ struct RemoteView: View {
             }
         }
 
+        // Cert bulunamazsa — Keychain timing sorunu olabilir, bir kez retry yap
         guard let identity = KeychainHelper.loadIdentity(certKey: device.certKey) else {
-            addLog("❌ Sertifika bulunamadı — yeniden eşleştirme gerekiyor")
+            addLog("⚠️ Sertifika bulunamadı, 1sn sonra tekrar deneniyor...")
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard let identity2 = KeychainHelper.loadIdentity(certKey: device.certKey) else {
+                addLog("❌ Sertifika yok — yeniden eşleştirme gerekiyor")
+                isReconnecting = false
+                onNeedPairing()
+                return
+            }
+            atv.setIdentity(identity2)
+            addLog("✅ Sertifika retry'da bulundu")
+            let ok = await atv.connect(ip: device.ip, port: device.remotePort)
+            addLog(ok ? "ATV bağlandı ✓" : "ATV bağlantısı başarısız")
             isReconnecting = false
-            onNeedPairing()
             return
         }
         atv.setIdentity(identity)
