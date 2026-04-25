@@ -107,13 +107,13 @@ struct AirMouseView: View {
                 .frame(maxHeight: .infinity)
                 .layoutPriority(1)
 
-            VStack(spacing: geo.size.height * 0.005) {
+            VStack(spacing: 4) {
                 actionButtons(geo: geo)
-                    .frame(height: geo.size.height * 0.12)
+                    .frame(height: 100)
                 keyboardButton(geo: geo)
-                    .frame(height: geo.size.height * 0.06)
+                    .frame(height: 52)
                 sensitivitySlider(geo: geo)
-                    .frame(height: geo.size.height * 0.08)
+                    .frame(height: 68)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -128,7 +128,7 @@ struct AirMouseView: View {
             .foregroundColor(.greenOk)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, geo.size.width * 0.03)
-            .padding(.vertical, geo.size.height * 0.005)
+            .padding(.vertical, 4)
             .background(Color.terminalBg)
     }
 
@@ -137,13 +137,13 @@ struct AirMouseView: View {
             Text(airOn ? "Air Modu" : "Kumanda Modu")
                 .foregroundColor(airOn ? .white : .redAccent)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, geo.size.height * 0.012)
+                .padding(.vertical, 10)
                 .background(airOn ? Color.redAccent : Color.blueDark)
                 .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.redAccent))
                 .cornerRadius(20)
         }
         .padding(.horizontal, geo.size.width * 0.03)
-        .padding(.top, geo.size.height * 0.008)
+        .padding(.top, 6)
     }
 
     private func mainArea(geo: GeometryProxy) -> some View {
@@ -152,7 +152,7 @@ struct AirMouseView: View {
             swipeBar(geo: geo)
         }
         .padding(.horizontal, geo.size.width * 0.03)
-        .padding(.vertical, geo.size.height * 0.012)
+        .padding(.vertical, 10)
         .frame(maxHeight: .infinity)
     }
 
@@ -229,7 +229,7 @@ struct AirMouseView: View {
     }
 
     private func actionButtons(geo: GeometryProxy) -> some View {
-        VStack(spacing: geo.size.height * 0.008) {
+        VStack(spacing: 6) {
             HStack(spacing: geo.size.width * 0.02) {
                 airBtn(icon: "arrow.backward", label: "Geri", geo: geo) { sendKey(AtvKey.back) }
                 airBtn(icon: "house",          label: "Home", geo: geo) { sendKey(AtvKey.home) }
@@ -247,7 +247,7 @@ struct AirMouseView: View {
             Label("Klavye", systemImage: "keyboard")
                 .foregroundColor(.greenOk)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, geo.size.height * 0.015)
+                .padding(.vertical, 12)
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.greenOk))
         }
         .padding(.horizontal, geo.size.width * 0.03)
@@ -268,7 +268,7 @@ struct AirMouseView: View {
         .background(Color.terminalBg)
         .cornerRadius(10)
         .padding(.horizontal, geo.size.width * 0.03)
-        .padding(.vertical, geo.size.height * 0.008)
+        .padding(.vertical, 6)
     }
 
     private func airBtn(icon: String, label: String, geo: GeometryProxy, action: @escaping () -> Void) -> some View {
@@ -279,7 +279,7 @@ struct AirMouseView: View {
             }
             .foregroundColor(.white)
             .frame(maxWidth: .infinity)
-            .frame(height: geo.size.height * 0.072)
+            .frame(height: 60)
             .background(Color.blueDark)
             .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.blueDeep))
             .cornerRadius(14)
@@ -289,7 +289,7 @@ struct AirMouseView: View {
     // MARK: - Calibration Page
 
     private func calibrationPage(geo: GeometryProxy) -> some View {
-        VStack(spacing: geo.size.height * 0.015) {
+        VStack(spacing: 12) {
             Text(activePtId == nil
                  ? "1. Nokta seç  2. Touchpad ile cursoru götür  3. Kaydet"
                  : "'\(calibLabels[activePtId!])': cursoru götür → Kaydet bas")
@@ -297,7 +297,7 @@ struct AirMouseView: View {
                 .foregroundColor(.gray)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, geo.size.width * 0.04)
-                .padding(.top, geo.size.height * 0.02)
+                .padding(.top, 16)
 
             Text("Kalibrasyon: \(engine.calibration.pointCount)/9 \(engine.calibration.isReady ? "✓ Hazır" : "– Eksik")")
                 .font(.system(size: geo.size.width * 0.032, weight: .semibold))
@@ -321,7 +321,7 @@ struct AirMouseView: View {
                 }
                 .foregroundColor(activePtId != nil ? .white : Color(hex: "666666"))
                 .frame(maxWidth: .infinity)
-                .frame(height: geo.size.height * 0.12)
+                .frame(height: 100)
                 .background(activePtId != nil ? Color.redAccent : Color(hex: "333333"))
                 .cornerRadius(20)
             }
@@ -336,7 +336,7 @@ struct AirMouseView: View {
                     .font(.system(size: geo.size.width * 0.032))
                     .foregroundColor(.gray)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, geo.size.height * 0.015)
+                    .padding(.vertical, 12)
                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray.opacity(0.4)))
             }
             .padding(.horizontal, geo.size.width * 0.04)
@@ -361,7 +361,7 @@ struct AirMouseView: View {
             }
             .foregroundColor(isActive ? .redAccent : isSaved ? .greenOk : .gray)
             .frame(maxWidth: .infinity)
-            .frame(height: geo.size.height * 0.1)
+            .frame(height: 84)
             .background(Color(hex: "0d1117"))
             .overlay(
                 RoundedRectangle(cornerRadius: 12)

@@ -13,7 +13,7 @@ struct PairingView: View {
             ZStack {
                 Color.appBg.ignoresSafeArea()
                 ScrollView {
-                    VStack(spacing: geo.size.height * 0.03) {
+                    VStack(spacing: 24) {
                         Text("TV Eşleştirme")
                             .font(.headline).foregroundColor(.white)
                         Text(device.ip)
@@ -48,7 +48,7 @@ struct PairingView: View {
     // MARK: - PIN section
 
     private func pinSection(geo: GeometryProxy) -> some View {
-        VStack(spacing: geo.size.height * 0.02) {
+        VStack(spacing: 16) {
             TextField("XXXXXX", text: $vm.pin)
                 .font(.system(size: min(geo.size.width * 0.08, 32), weight: .bold, design: .monospaced))
                 .tracking(8)
@@ -70,7 +70,7 @@ struct PairingView: View {
                         Text("Onayla").font(.headline).foregroundColor(.white)
                     }
                 }
-                .frame(maxWidth: .infinity).frame(height: geo.size.height * 0.075)
+                .frame(maxWidth: .infinity).frame(height: 64)
                 .background(Color.redAccent).cornerRadius(12)
             }
             .disabled(vm.verifying)

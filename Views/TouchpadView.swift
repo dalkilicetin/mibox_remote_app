@@ -13,7 +13,7 @@ struct TouchpadView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .bottom) {
-                VStack(spacing: geo.size.height * 0.01) {
+                VStack(spacing: 8) {
                     touchpadArea(geo: geo)
                     hScrollBar(geo: geo)
                     clickButton(geo: geo)
@@ -46,14 +46,14 @@ struct TouchpadView: View {
             swipeScrollBar(geo: geo)
         }
         .frame(maxWidth: .infinity)
-        .frame(height: geo.size.height * 0.45)
+        .frame(maxHeight: .infinity).layoutPriority(1)
         .padding(.horizontal, geo.size.width * 0.03)
-        .padding(.top, geo.size.height * 0.01)
+        .padding(.top, 8)
         .overlay(
             RoundedRectangle(cornerRadius: 16)
                 .stroke(Color.blueDeep, lineWidth: 2)
                 .padding(.horizontal, geo.size.width * 0.03)
-                .padding(.top, geo.size.height * 0.01)
+                .padding(.top, 8)
         )
     }
 
@@ -111,7 +111,7 @@ struct TouchpadView: View {
                     .padding(.horizontal, geo.size.width * 0.02)
             }
         }
-        .frame(height: geo.size.height * 0.065)
+        .frame(height: 52)
         .background(Color(hex: "0d1117"))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.blueDeep, lineWidth: 2))
         .cornerRadius(16)
@@ -129,7 +129,7 @@ struct TouchpadView: View {
                 Text("Tikla").foregroundColor(.greenOk).font(.system(size: geo.size.width * 0.038))
             }
             .frame(maxWidth: .infinity)
-            .frame(height: geo.size.height * 0.07)
+            .frame(height: 56)
             .background(Color(hex: "1a3a1a"))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.greenOk))
             .cornerRadius(12)
@@ -141,14 +141,14 @@ struct TouchpadView: View {
         Button(action: { kbdVisible = true }) {
             Label("Klavye", systemImage: "keyboard").foregroundColor(.greenOk)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, geo.size.height * 0.014)
+                .padding(.vertical, 12)
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.greenOk))
         }
         .padding(.horizontal, geo.size.width * 0.03)
     }
 
     private func actionButtons(geo: GeometryProxy) -> some View {
-        VStack(spacing: geo.size.height * 0.008) {
+        VStack(spacing: 6) {
             HStack(spacing: geo.size.width * 0.02) {
                 tpBtn(icon: "arrow.backward", label: "Geri", geo: geo) { sendKey(AtvKey.back) }
                 tpBtn(icon: "house",          label: "Home", geo: geo) { sendKey(AtvKey.home) }
@@ -160,7 +160,7 @@ struct TouchpadView: View {
             }
         }
         .padding(.horizontal, geo.size.width * 0.03)
-        .padding(.bottom, geo.size.height * 0.01)
+        .padding(.bottom, 8)
     }
 
     private func tpBtn(icon: String, label: String, geo: GeometryProxy, action: @escaping () -> Void) -> some View {
@@ -171,7 +171,7 @@ struct TouchpadView: View {
             }
             .foregroundColor(.white)
             .frame(maxWidth: .infinity)
-            .frame(height: geo.size.height * 0.07)
+            .frame(height: 56)
             .background(Color.blueDark)
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.blueDeep))
             .cornerRadius(12)
