@@ -186,10 +186,8 @@ struct AirMouseView: View {
                     let ms    = Int(Date().timeIntervalSince(tapTime) * 1000)
                     if moved < Self.TAP_MAX_MOVE && ms < Self.TAP_MAX_MS {
                         if airOn {
-                            // Cursor snapshot al — async pipeline'dan bağımsız, o anki pozisyonu yakala
-                            let cx = apk.cursorX
-                            let cy = apk.cursorY
-                            apk.tap(x: cx, y: cy)
+                            apk.moveCursor(dx: 0, dy: 0)  // server cursor sync
+                            apk.tap()
                         } else {
                             sendKey(AtvKey.dpadCenter)
                         }

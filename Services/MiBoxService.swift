@@ -180,12 +180,8 @@ final class MiBoxService: ObservableObject {
         send(["type": "move", "dx": dx, "dy": dy])   // orijinal çalışan format
     }
 
-    func tap(x: Int? = nil, y: Int? = nil) {
-        if let x = x, let y = y {
-            send(["type": "tap", "x": x, "y": y])
-        } else {
-            send(["type": "tap"])
-        }
+    func tap() {
+        send(["type": "tap"])
     }
 
     func sendKey(_ code: Int)     { send(["type": "key", "code": code]) }
