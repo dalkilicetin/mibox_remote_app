@@ -105,11 +105,15 @@ struct AirMouseView: View {
 
             mainArea(geo: geo)
                 .frame(maxHeight: .infinity)
+                .layoutPriority(1)
 
-            VStack(spacing: geo.size.height * 0.008) {
+            VStack(spacing: geo.size.height * 0.006) {
                 actionButtons(geo: geo)
+                    .frame(height: geo.size.height * 0.16)
                 keyboardButton(geo: geo)
+                    .frame(height: geo.size.height * 0.07)
                 sensitivitySlider(geo: geo)
+                    .frame(height: geo.size.height * 0.10)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
