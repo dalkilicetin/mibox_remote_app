@@ -186,8 +186,10 @@ struct AirMouseView: View {
                     let ms    = Int(Date().timeIntervalSince(tapTime) * 1000)
                     if moved < Self.TAP_MAX_MOVE && ms < Self.TAP_MAX_MS {
                         if airOn {
-                            apk.tap()
-                            // ATV dpadCenter gönderilmiyor — APK cursor pozisyonuna tıklıyor
+                            // Cursor snapshot al — async pipeline'dan bağımsız, o anki pozisyonu yakala
+                            let cx = apk.cursorX
+                            let cy = apk.cursorY
+                            apk.tap(x: cx, y: cy)
                         } else {
                             sendKey(AtvKey.dpadCenter)
                         }

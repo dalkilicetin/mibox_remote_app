@@ -176,10 +176,13 @@ final class MiBoxService: ObservableObject {
         send(["type": "move", "dx": dx, "dy": dy])
     }
 
-    func tap() {
-        // APK kaynak koduna göre: tap komutu gelince realX/realY'e tıklıyor
-        // Accessibility service bağlıysa a11y ile, değilse log warning
-        send(["type": "tap"])
+    func tap(x: Int? = nil, y: Int? = nil) {
+        // Koordinat verilmişse direkt o noktaya tap — state senkron sorununu önler
+        if let x = x, let y = y {
+            send(["type": "tap", "x": x, "y": y])
+        } else {
+            send(["type": "tap"])
+        }
     }
     func sendKey(_ code: Int)     { send(["type": "key",  "code":  code]) }
     func sendText(_ text: String) { send(["type": "text", "value": text]) }
