@@ -14,6 +14,11 @@ struct PairingView: View {
                 Color.appBg.ignoresSafeArea()
                 ScrollView {
                     VStack(spacing: geo.size.height * 0.03) {
+                        Text("TV Eşleştirme")
+                            .font(.headline).foregroundColor(.white)
+                        Text(device.ip)
+                            .font(.system(size: 12, design: .monospaced)).foregroundColor(.gray)
+
                         Image(systemName: "link")
                             .font(.system(size: min(geo.size.width * 0.14, 56)))
                             .foregroundColor(.redAccent)
@@ -33,9 +38,7 @@ struct PairingView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .navigationTitle("TV Eşleştirme — \(device.ip)")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarColorScheme(.dark, for: .navigationBar)
+        .navigationBarHidden(true)
         .task { await vm.start(device: device) }
         .onReceive(vm.$pairingSuccess) { success in
             if success { onDone(true, vm.finalCertKey) }

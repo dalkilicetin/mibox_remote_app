@@ -109,6 +109,7 @@ struct SetupView: View {
             discovery.stop()
             discovery.stopMonitoringNetwork()
         }
+        .navigationBarHidden(true)
         .alert("Manuel IP Gir", isPresented: $showManualEntry) {
             TextField("192.168.x.x", text: $manualIP)
                 .keyboardType(.numbersAndPunctuation)
