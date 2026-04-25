@@ -187,7 +187,7 @@ struct AirMouseView: View {
                     if moved < Self.TAP_MAX_MOVE && ms < Self.TAP_MAX_MS {
                         if airOn {
                             apk.tap()
-                            if atv.isConnected { atv.sendKey(AtvKey.dpadCenter) }
+                            // ATV dpadCenter gönderilmiyor — APK cursor pozisyonuna tıklıyor
                         } else {
                             sendKey(AtvKey.dpadCenter)
                         }
