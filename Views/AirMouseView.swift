@@ -107,13 +107,13 @@ struct AirMouseView: View {
                 .frame(maxHeight: .infinity)
                 .layoutPriority(1)
 
-            VStack(spacing: geo.size.height * 0.006) {
+            VStack(spacing: geo.size.height * 0.005) {
                 actionButtons(geo: geo)
-                    .frame(height: geo.size.height * 0.16)
+                    .frame(height: geo.size.height * 0.12)
                 keyboardButton(geo: geo)
-                    .frame(height: geo.size.height * 0.07)
+                    .frame(height: geo.size.height * 0.06)
                 sensitivitySlider(geo: geo)
-                    .frame(height: geo.size.height * 0.10)
+                    .frame(height: geo.size.height * 0.08)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -128,7 +128,7 @@ struct AirMouseView: View {
             .foregroundColor(.greenOk)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, geo.size.width * 0.03)
-            .padding(.vertical, geo.size.height * 0.008)
+            .padding(.vertical, geo.size.height * 0.005)
             .background(Color.terminalBg)
     }
 
@@ -137,13 +137,13 @@ struct AirMouseView: View {
             Text(airOn ? "Air Modu" : "Kumanda Modu")
                 .foregroundColor(airOn ? .white : .redAccent)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, geo.size.height * 0.018)
+                .padding(.vertical, geo.size.height * 0.012)
                 .background(airOn ? Color.redAccent : Color.blueDark)
                 .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.redAccent))
                 .cornerRadius(20)
         }
         .padding(.horizontal, geo.size.width * 0.03)
-        .padding(.top, geo.size.height * 0.012)
+        .padding(.top, geo.size.height * 0.008)
     }
 
     private func mainArea(geo: GeometryProxy) -> some View {
