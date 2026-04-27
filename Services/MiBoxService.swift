@@ -181,10 +181,25 @@ final class MiBoxService: ObservableObject {
         send(["type": "move", "dx": dx, "dy": dy])   // orijinal çalışan format
     }
 
+    // Tap sonucu callback — AirMouseView navigate kararı için
+    // clicked=true  → tıklama oldu, ek aksiyon yok
+    // clicked=false → targetX/Y'e göre ATV ile navigate gerekli
+    // targetX=-1    → DPAD_CENTER direkt gönder
+    var onTapResult: ((TapResult) -> Void)?
+
     func tap() {
         let msg = "📱 APK tap() — isConnected=\(isConnected)"
         print("[APK] \(msg)"); onLog?(msg)
         send(["type": "tap"])
+    }
+
+    struct TapResult {
+        let clicked:  Bool   // performAction başarılı olduysa true → ek işlem yok
+        let targetX:  Int    // hedef node X (-1 = bulunamadı)
+        let targetY:  Int    // hedef node Y
+        let focusX:   Int    // TV'deki mevcut focus X
+        let focusY:   Int    // TV'deki mevcut focus Y
+        let label:    String // debug
     }
 
     func sendKey(_ code: Int)     { send(["type": "key", "code": code]) }
@@ -245,13 +260,29 @@ final class MiBoxService: ObservableObject {
                 if let p = json["atvPairingPort"] as? Int { atvPairingPort = p }
                 if let r = json["atvRemotePort"]  as? Int { atvRemotePort  = r }
 
-                // Tap response: a11y durumunu logla
+                // Tap response → TapResult parse et, callback'e ilet
                 if json["tap"] != nil {
-                    let a11y = json["a11y"] as? Bool ?? false
-                    let msg = a11y
-                        ? "✅ APK tap → accessibility inject (\(cursorX),\(cursorY))"
-                        : "⚠️ APK tap → fallback (Runtime.exec) (\(cursorX),\(cursorY))"
+                    let clicked = json["clicked"] as? Bool ?? false
+                    let targetX = json["targetX"] as? Int ?? -1
+                    let targetY = json["targetY"] as? Int ?? -1
+                    let focusX  = json["focusX"]  as? Int ?? -1
+                    let focusY  = json["focusY"]  as? Int ?? -1
+                    let label   = json["label"]   as? String ?? ""
+
+                    let result = TapResult(
+                        clicked: clicked,
+                        targetX: targetX, targetY: targetY,
+                        focusX:  focusX,  focusY:  focusY,
+                        label:   label
+                    )
+
+                    let msg = clicked
+                        ? "✅ APK tap → ACTION_CLICK '\(label)' (\(targetX),\(targetY))"
+                        : targetX == -1
+                            ? "⚠️ APK tap → no node → iOS DPAD_CENTER"
+                            : "↗️ APK tap → navigate to (\(targetX),\(targetY)) from focus (\(focusX),\(focusY))"
                     onLog?(msg)
+                    onTapResult?(result)
                 }
             }
         }

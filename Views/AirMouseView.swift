@@ -191,9 +191,7 @@ struct AirMouseView: View {
                         if airOn {
                             apk.moveCursor(dx: 0, dy: 0)
                             apk.tap()
-                            if atv.isConnected {
-                                atv.sendKey(AtvKey.dpadCenter)
-                            }
+                            // Navigation kararı onTapResult callback'te → handleTapResult()
                         } else {
                             sendKey(AtvKey.dpadCenter)
                         }
@@ -401,6 +399,14 @@ struct AirMouseView: View {
         engine.screenW = Double(apk.screenW)
         engine.screenH = Double(apk.screenH)
 
+        // Tap sonucunu burada handle et:
+        // clicked=true  → performAction başardı, ek şey yok
+        // clicked=false → ATV protokolüyle navigate et sonra DPAD_CENTER bas
+        // targetX=-1    → doğrudan DPAD_CENTER
+        apk.onTapResult = { [self] result in
+            handleTapResult(result)
+        }
+
         guard motion.isDeviceMotionAvailable else { return }
         motion.deviceMotionUpdateInterval = 1.0 / 60
         motion.startDeviceMotionUpdates(
@@ -442,6 +448,70 @@ struct AirMouseView: View {
         engine.onCursorUpdate(x: Double(apk.cursorX), y: Double(apk.cursorY))
 
         debugText = "dx:\(dx) dy:\(dy) \(engine.calibration.isReady ? "[MAP]" : "[DELTA]")"
+    }
+
+    // MARK: - Tap result handler
+
+    private func handleTapResult(_ result: MiBoxService.TapResult) {
+        guard atv.isConnected else {
+            // ATV bağlı değil — APK'nın verdiği en iyi sonuçla devam
+            // clicked=true ise zaten tıklandı. false ise yapacak bir şey yok.
+            return
+        }
+
+        if result.clicked {
+            // performAction(ACTION_CLICK) başardı — hiçbir şey yapmaya gerek yok
+            debugText = "✅ clicked '\(result.label)'"
+            return
+        }
+
+        if result.targetX == -1 {
+            // Node bulunamadı — mevcut focus'a DPAD_CENTER
+            debugText = "⚠️ no node → CENTER"
+            atv.sendKey(AtvKey.dpadCenter)
+            return
+        }
+
+        // Node bulundu ama performAction başarısız — ATV ile navigate et
+        // focusX/Y = TV'nin şu anki focus'u, targetX/Y = varmak istediğimiz yer
+        let fx = result.focusX
+        let fy = result.focusY
+        let tx = result.targetX
+        let ty = result.targetY
+
+        if fx == -1 || fy == -1 {
+            // Focus bilgisi yok — direkt CENTER bas
+            atv.sendKey(AtvKey.dpadCenter)
+            return
+        }
+
+        debugText = "↗️ nav focus(\(fx),\(fy))→(\(tx),\(ty))"
+
+        // Delta hesapla, DPAD yönlerine dönüştür, sırayla gönder
+        // Önce dikey hizala, sonra yatay — TV grid navigation mantığı
+        Task {
+            let dy = ty - fy
+            let dx = tx - fx
+
+            // Dikey — her 150px için 1 DPAD basışı (TV row yüksekliği tahmini)
+            let vSteps = abs(dy) / 150
+            let vKey   = dy > 0 ? AtvKey.dpadDown : AtvKey.dpadUp
+            for _ in 0..<vSteps {
+                atv.sendKey(vKey)
+                try? await Task.sleep(nanoseconds: 180_000_000) // 180ms — focus event bekle
+            }
+
+            // Yatay — her 200px için 1 DPAD basışı (TV column genişliği tahmini)
+            let hSteps = abs(dx) / 200
+            let hKey   = dx > 0 ? AtvKey.dpadRight : AtvKey.dpadLeft
+            for _ in 0..<hSteps {
+                atv.sendKey(hKey)
+                try? await Task.sleep(nanoseconds: 180_000_000)
+            }
+
+            // Son olarak SELECT
+            atv.sendKey(AtvKey.dpadCenter)
+        }
     }
 
     // MARK: - Actions
