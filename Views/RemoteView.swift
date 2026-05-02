@@ -184,13 +184,13 @@ struct RemoteView: View {
     private var tabContent: some View {
         if hasApk {
             switch selectedTab {
-            case 0: AirMouseView(apk: apk, atv: atv)
+            case 0: AirMouseView(atv: atv)
             case 1: TouchpadView(apk: apk, atv: atv)
             default: debugView
             }
         } else {
             switch selectedTab {
-            case 0: DpadView(atv: atv)
+            case 0: AirMouseView(atv: atv)
             default: debugView
             }
         }

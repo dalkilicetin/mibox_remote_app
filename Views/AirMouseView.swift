@@ -2,70 +2,65 @@ import SwiftUI
 import CoreMotion
 
 struct AirMouseView: View {
-    let apk: MiBoxService
     let atv: AtvRemoteService
 
-    @State private var airOn         = false
-    @State private var debugText     = "Hazır"
+    @State private var debugText      = "Hazır"
     @State private var sensitivity: Double = 25
-    @State private var kbdVisible    = false
-    @State private var kbdText       = ""
-    @State private var swipeCooldown = false
-    @State private var selectedTab   = 0   // 0=Air, 1=Kalibrasyon
+    @State private var kbdVisible     = false
+    @State private var kbdText        = ""
 
-    // Kalibrasyon
-    @State private var activePtId: Int? = nil
+    // Gyro aktif mi (basılı tutuluyor mu)
+    @State private var gyroActive     = false
+
+    // Çift tık
+    @State private var lastTapTime: Date = .distantPast
+
+    // D-pad accumulator
+    @State private var accumX: Double = 0
+    @State private var accumY: Double = 0
+    private let dpadThreshold: Double = 80   // düşük = daha duyarlı
 
     // Sensor timing
     @State private var lastTime: Date = Date()
 
-    // DPAD accumulator — küçük hareketleri filtrele
-    @State private var dpadAccumX: Double = 0
-    @State private var dpadAccumY: Double = 0
-    private let dpadThreshold: Double = 120  // pixel — bu kadar hareket edince DPAD gönder
-    @State private var tapStart   = CGPoint.zero
-    @State private var tapLast    = CGPoint.zero
-    @State private var tapTime    = Date()
-    @State private var tapAccumV  = 0.0
-    @State private var tapAccumH  = 0.0
-    @State private var swipeAccum = 0.0
-
     private let motion = CMMotionManager()
     private let engine = InputEngine()
 
-    private static let TAP_MAX_MOVE: Double = 12
-    private static let TAP_MAX_MS   = 250
-    private static let SCROLL_THRESH: Double = 65
-    private static let SWIPE_THRESH:  Double = 40
-
-    private let calibLabels = [
-        "Sol Üst",  "Orta Üst", "Sağ Üst",
-        "Sol Orta", "Merkez",   "Sağ Orta",
-        "Sol Alt",  "Orta Alt", "Sağ Alt"
-    ]
+    // Çift tık için max aralık
+    private let doubleTapInterval: TimeInterval = 0.35
 
     var body: some View {
         ZStack(alignment: .bottom) {
             Color.appBg.ignoresSafeArea()
+
             VStack(spacing: 0) {
-                tabBar
-                Group {
-                    if selectedTab == 0 {
-                        airMousePage()
-                    } else {
-                        calibrationPage()
-                    }
+                debugBar()
+
+                VStack(spacing: 12) {
+                    gyroPad()
+                        .frame(maxHeight: .infinity)
+
+                    actionButtons()
+                        .frame(height: 100)
+
+                    keyboardButton()
+                        .frame(height: 52)
+
+                    sensitivitySlider()
+                        .frame(height: 68)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+
             if kbdVisible {
                 KeyboardPopup(
                     text: $kbdText,
                     isVisible: $kbdVisible,
                     onSend: sendText,
-                    onBackspace: { apk.sendKey(67) },
-                    onEnter:     { apk.sendKey(66) }
+                    onBackspace: { atv.sendKey(67) },
+                    onEnter:     { atv.sendKey(66) }
                 )
             }
         }
@@ -74,56 +69,10 @@ struct AirMouseView: View {
         .onDisappear { stopSensors() }
     }
 
-    // MARK: - Tab bar
-
-    private var tabBar: some View {
-        HStack(spacing: 0) {
-            ForEach(Array(["Air Mouse", "Kalibrasyon"].enumerated()), id: \.offset) { idx, name in
-                Button(action: { selectedTab = idx }) {
-                    VStack(spacing: 4) {
-                        Text(name)
-                            .font(.system(size: 13))
-                            .foregroundColor(selectedTab == idx ? .redAccent : .gray)
-                        Rectangle()
-                            .fill(selectedTab == idx ? Color.redAccent : .clear)
-                            .frame(height: 2)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-            }
-        }
-        .padding(.top, 4)
-        .background(Color.cardBg)
-    }
-
-    // MARK: - Air Mouse Page
-
-    private func airMousePage() -> some View {
-        VStack(spacing: 0) {
-            debugBar()
-            toggleButton()
-
-            mainArea()
-                .frame(maxHeight: .infinity)
-                .layoutPriority(1)
-
-            VStack(spacing: 4) {
-                actionButtons()
-                    .frame(height: 100)
-                keyboardButton()
-                    .frame(height: 52)
-                sensitivitySlider()
-                    .frame(height: 68)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
+    // MARK: - Debug bar
 
     private func debugBar() -> some View {
-        let calibStatus = engine.calibration.isReady
-            ? "CAL:\(engine.calibration.pointCount)/9"
-            : "DELTA"
-        return Text("\(debugText) [\(calibStatus)]")
+        Text(debugText)
             .font(.system(size: 11, design: .monospaced))
             .foregroundColor(.greenOk)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -132,289 +81,99 @@ struct AirMouseView: View {
             .background(Color.terminalBg)
     }
 
-    private func toggleButton() -> some View {
-        Button(action: toggleAir) {
-            Text(airOn ? "Air Modu" : "Kumanda Modu")
-                .foregroundColor(airOn ? .white : .redAccent)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
-                .background(airOn ? Color.redAccent : Color.blueDark)
-                .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.redAccent))
-                .cornerRadius(20)
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 6)
-    }
+    // MARK: - Gyro Pad
 
-    private func mainArea() -> some View {
-        HStack(spacing: 12) {
-            tapArea()
-            swipeBar()
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .frame(maxHeight: .infinity)
-    }
-
-    private func tapArea() -> some View {
+    private func gyroPad() -> some View {
         ZStack {
-            Color.redAccent.cornerRadius(24)
-            Text("TIKLA")
-                .font(.system(size: 28, weight: .bold))
-                .foregroundColor(.white)
+            RoundedRectangle(cornerRadius: 28)
+                .fill(gyroActive ? Color.redAccent : Color.blueDark)
+                .animation(.easeInOut(duration: 0.15), value: gyroActive)
+
+            RoundedRectangle(cornerRadius: 28)
+                .stroke(gyroActive ? Color.white.opacity(0.3) : Color.redAccent, lineWidth: 2)
+
+            VStack(spacing: 8) {
+                Image(systemName: gyroActive ? "gyroscope" : "hand.tap")
+                    .font(.system(size: 36))
+                    .foregroundColor(.white)
+
+                Text(gyroActive ? "Yönlendiriyor..." : "Basılı Tut")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(.white)
+
+                Text("Çift tık → Seç")
+                    .font(.system(size: 13))
+                    .foregroundColor(.white.opacity(0.6))
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .gesture(
             DragGesture(minimumDistance: 0)
-                .onChanged { v in
-                    if tapLast == .zero {
-                        tapStart = v.location; tapLast = v.location
-                        tapTime = Date(); tapAccumV = 0; tapAccumH = 0
-                    }
-                    let dx = v.location.x - tapLast.x
-                    let dy = v.location.y - tapLast.y
-                    tapLast = v.location
-                    tapAccumV += dy; tapAccumH += dx
-                    if abs(tapAccumV) >= Self.SCROLL_THRESH {
-                        apk.sendKey(tapAccumV > 0 ? 20 : 19)
-                        apk.setScrollMode(1); tapAccumV = 0
-                    }
-                    if abs(tapAccumH) >= Self.SCROLL_THRESH {
-                        apk.sendKey(tapAccumH > 0 ? 22 : 21)
-                        apk.setScrollMode(2); tapAccumH = 0
+                .onChanged { _ in
+                    if !gyroActive {
+                        activateGyro()
                     }
                 }
-                .onEnded { v in
-                    let moved = hypot(tapLast.x - tapStart.x, tapLast.y - tapStart.y)
-                    let ms    = Int(Date().timeIntervalSince(tapTime) * 1000)
-                    if moved < Self.TAP_MAX_MOVE && ms < Self.TAP_MAX_MS {
-                        if airOn {
-                            apk.moveCursor(dx: 0, dy: 0)
-                            apk.tap()
-                            // Navigation kararı onTapResult callback'te → handleTapResult()
-                        } else {
-                            sendKey(AtvKey.dpadCenter)
-                        }
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    }
-                    tapLast = .zero; tapAccumV = 0; tapAccumH = 0
+                .onEnded { _ in
+                    deactivateGyro()
+                    handleTap()
                 }
         )
     }
 
-    private func swipeBar() -> some View {
-        VStack(spacing: 0) {
-            Button(action: { sendSwipe(1) }) {
-                Image(systemName: "chevron.up").foregroundColor(.redAccent)
-                    .padding(10)
-            }
-            Rectangle().fill(Color.blueDeep).frame(width: 4).frame(maxHeight: .infinity)
-            Button(action: { sendSwipe(-1) }) {
-                Image(systemName: "chevron.down").foregroundColor(.redAccent)
-                    .padding(10)
-            }
-        }
-        .frame(width: 36)
-        .background(Color(hex: "0d1117"))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.blueDeep, lineWidth: 2))
-        .cornerRadius(16)
-        .gesture(DragGesture()
-            .onChanged { v in
-                swipeAccum += v.translation.height
-                if abs(swipeAccum) >= Self.SWIPE_THRESH {
-                    sendSwipe(swipeAccum > 0 ? -1 : 1); swipeAccum = 0
-                }
-            }
-            .onEnded { _ in swipeAccum = 0 }
-        )
-    }
+    // MARK: - Gyro aç/kapat
 
-    private func actionButtons() -> some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 12) {
-                airBtn(icon: "arrow.backward", label: "Geri") { sendKey(AtvKey.back) }
-                airBtn(icon: "house",          label: "Home") { sendKey(AtvKey.home) }
-            }
-            HStack(spacing: 12) {
-                airBtn(icon: "speaker.plus",  label: "Ses+") { sendKey(AtvKey.volumeUp) }
-                airBtn(icon: "speaker.minus", label: "Ses-") { sendKey(AtvKey.volumeDown) }
-            }
-        }
-        .padding(.horizontal, 16)
-    }
-
-    private func keyboardButton() -> some View {
-        Button(action: { kbdVisible = true }) {
-            Label("Klavye", systemImage: "keyboard")
-                .foregroundColor(.greenOk)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.greenOk))
-        }
-        .padding(.horizontal, 16)
-    }
-
-    private func sensitivitySlider() -> some View {
-        VStack(spacing: 4) {
-            HStack {
-                Text("Hassasiyet")
-                    .font(.system(size: 16)).foregroundColor(.gray)
-                Spacer()
-                Text("\(Int(sensitivity))")
-                    .font(.system(size: 16, weight: .bold)).foregroundColor(.redAccent)
-            }
-            Slider(value: $sensitivity, in: 5...150).tint(.redAccent)
-        }
-        .padding(16)
-        .background(Color.terminalBg)
-        .cornerRadius(10)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
-    }
-
-    private func airBtn(icon: String, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: icon).font(.system(size: 18))
-                Text(label).font(.system(size: 13))
-            }
-            .foregroundColor(.white)
-            .frame(maxWidth: .infinity)
-            .frame(height: 60)
-            .background(Color.blueDark)
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.blueDeep))
-            .cornerRadius(14)
-        }
-    }
-
-    // MARK: - Calibration Page
-
-    private func calibrationPage() -> some View {
-        VStack(spacing: 12) {
-            Text(activePtId == nil
-                 ? "1. Nokta seç  2. Touchpad ile cursoru götür  3. Kaydet"
-                 : "'\(calibLabels[activePtId!])': cursoru götür → Kaydet bas")
-                .font(.system(size: 16))
-                .foregroundColor(.gray)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 16)
-                .padding(.top, 16)
-
-            Text("Kalibrasyon: \(engine.calibration.pointCount)/9 \(engine.calibration.isReady ? "✓ Hazır" : "– Eksik")")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(engine.calibration.isReady ? .greenOk : Color(hex: "fbbf24"))
-
-            LazyVGrid(
-                columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3),
-                spacing: 8
-            ) {
-                ForEach(0..<9, id: \.self) { id in
-                    calibDot(id: id)
-                }
-            }
-            .padding(.horizontal, 16)
-
-            Button(action: saveCalibPoint) {
-                VStack(spacing: 4) {
-                    Text("Kaydet").font(.system(size: 20, weight: .bold))
-                    Text(activePtId != nil ? calibLabels[activePtId!] : "Önce nokta seç")
-                        .font(.system(size: 16))
-                }
-                .foregroundColor(activePtId != nil ? .white : Color(hex: "666666"))
-                .frame(maxWidth: .infinity)
-                .frame(height: 100)
-                .background(activePtId != nil ? Color.redAccent : Color(hex: "333333"))
-                .cornerRadius(20)
-            }
-            .disabled(activePtId == nil)
-            .padding(.horizontal, 16)
-
-            Button(action: {
-                engine.calibration.reset()
-                activePtId = nil
-            }) {
-                Text("Kalibrasyonu Sıfırla")
-                    .font(.system(size: 13))
-                    .foregroundColor(.gray)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray.opacity(0.4)))
-            }
-            .padding(.horizontal, 16)
-
-            Spacer()
-        }
-    }
-
-    private func calibDot(id: Int) -> some View {
-        let isSaved  = engine.calibration.points.contains { $0.id == id }
-        let isActive = activePtId == id
-        let parts    = calibLabels[id].components(separatedBy: " ")
-
-        return Button(action: { activePtId = id }) {
-            VStack(spacing: 3) {
-                Text(parts.first ?? "").font(.system(size: 16, weight: .semibold))
-                Text(parts.dropFirst().joined(separator: " ")).font(.system(size: 10))
-                if isSaved {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 14))
-                }
-            }
-            .foregroundColor(isActive ? .redAccent : isSaved ? .greenOk : .gray)
-            .frame(maxWidth: .infinity)
-            .frame(height: 84)
-            .background(Color(hex: "0d1117"))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(
-                        isActive ? Color.redAccent : isSaved ? Color.greenOk : Color.blueDeep,
-                        lineWidth: 1.5
-                    )
-            )
-            .cornerRadius(12)
-        }
-    }
-
-    private func saveCalibPoint() {
-        guard let id = activePtId else { return }
-        // Fix 1: pipeline'dan geçmiş accDb/accDa — mutlak açı değil
-        let point = CalibPoint(
-            id: id,
-            db: engine.lastAccDb,
-            da: engine.lastAccDa,
-            cx: Double(apk.cursorX),
-            cy: Double(apk.cursorY)
-        )
-        engine.calibration.addPoint(point)
+    private func activateGyro() {
+        gyroActive = true
+        engine.reset()   // basma anı = yeni referans noktası
+        accumX = 0
+        accumY = 0
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        activePtId = (id + 1) % 9
+        debugText = "🎯 Gyro aktif"
+    }
+
+    private func deactivateGyro() {
+        gyroActive = false
+        accumX = 0
+        accumY = 0
+        engine.reset()
+        debugText = "Hazır"
+    }
+
+    // MARK: - Çift tık
+
+    private func handleTap() {
+        let now = Date()
+        let elapsed = now.timeIntervalSince(lastTapTime)
+
+        if elapsed < doubleTapInterval {
+            // Çift tık → SELECT
+            atv.sendKey(AtvKey.dpadCenter)
+            UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+            debugText = "✅ Seçildi"
+            lastTapTime = .distantPast   // üçüncü tık yeni döngü başlatsın
+        } else {
+            lastTapTime = now
+        }
     }
 
     // MARK: - Sensors
-    // Fix 2: CMDeviceMotion — Apple'ın sensor fusion, sync ve tutarlı
 
     private func startSensors() {
         motion.stopDeviceMotionUpdates()
         engine.reset()
-        engine.screenW = Double(apk.screenW)
-        engine.screenH = Double(apk.screenH)
 
-        // Tap sonucunu burada handle et:
-        // clicked=true  → performAction başardı, ek şey yok
-        // clicked=false → ATV protokolüyle navigate et sonra DPAD_CENTER bas
-        // targetX=-1    → doğrudan DPAD_CENTER
-        apk.onTapResult = { [self] result in
-            handleTapResult(result)
+        guard motion.isDeviceMotionAvailable else {
+            debugText = "⚠️ Gyro yok"
+            return
         }
 
-        guard motion.isDeviceMotionAvailable else { return }
         motion.deviceMotionUpdateInterval = 1.0 / 60
         motion.startDeviceMotionUpdates(
             using: .xMagneticNorthZVertical,
             to: .main
         ) { data, _ in
             guard let d = data else { return }
-            // attitude.pitch → dikey (beta), attitude.yaw → yatay (alpha)
             let beta  = d.attitude.pitch * 180 / .pi
             let alpha = d.attitude.yaw   * 180 / .pi
             onSensorUpdate(beta: beta, alpha: alpha)
@@ -431,8 +190,8 @@ struct AirMouseView: View {
         guard dt >= 0.016 else { return }
         lastTime = now
 
-        if !airOn {
-            debugText = "pitch:\(String(format:"%.1f", beta)) yaw:\(String(format:"%.1f", alpha))"
+        guard gyroActive else {
+            debugText = "pitch:\(String(format: "%.1f", beta)) yaw:\(String(format: "%.1f", alpha))"
             engine.reset()
             return
         }
@@ -444,107 +203,104 @@ struct AirMouseView: View {
             sensitivity: sensitivity
         ) else { return }
 
-        apk.moveCursor(dx: dx, dy: dy)
-        engine.onCursorUpdate(x: Double(apk.cursorX), y: Double(apk.cursorY))
+        accumX += Double(dx)
+        accumY += Double(dy)
 
-        debugText = "dx:\(dx) dy:\(dy) \(engine.calibration.isReady ? "[MAP]" : "[DELTA]")"
-    }
+        // Dominant eksen — aynı anda ikisi aşıldıysa büyük olanı seç
+        let xOver = abs(accumX) >= dpadThreshold
+        let yOver = abs(accumY) >= dpadThreshold
 
-    // MARK: - Tap result handler
-
-    private func handleTapResult(_ result: MiBoxService.TapResult) {
-        guard atv.isConnected else {
-            // ATV bağlı değil — APK'nın verdiği en iyi sonuçla devam
-            // clicked=true ise zaten tıklandı. false ise yapacak bir şey yok.
-            return
-        }
-
-        if result.clicked {
-            // performAction(ACTION_CLICK) başardı — hiçbir şey yapmaya gerek yok
-            debugText = "✅ clicked '\(result.label)'"
-            return
-        }
-
-        if result.targetX == -1 {
-            // Node bulunamadı — mevcut focus'a DPAD_CENTER
-            debugText = "⚠️ no node → CENTER"
-            atv.sendKey(AtvKey.dpadCenter)
-            return
-        }
-
-        // Node bulundu ama performAction başarısız — ATV ile navigate et
-        // focusX/Y = TV'nin şu anki focus'u, targetX/Y = varmak istediğimiz yer
-        let fx = result.focusX
-        let fy = result.focusY
-        let tx = result.targetX
-        let ty = result.targetY
-
-        if fx == -1 || fy == -1 {
-            // Focus bilgisi yok — direkt CENTER bas
-            atv.sendKey(AtvKey.dpadCenter)
-            return
-        }
-
-        debugText = "↗️ nav focus(\(fx),\(fy))→(\(tx),\(ty))"
-
-        // Delta hesapla, DPAD yönlerine dönüştür, sırayla gönder
-        // Önce dikey hizala, sonra yatay — TV grid navigation mantığı
-        Task {
-            let dy = ty - fy
-            let dx = tx - fx
-
-            // Dikey — her 150px için 1 DPAD basışı (TV row yüksekliği tahmini)
-            let vSteps = abs(dy) / 150
-            let vKey   = dy > 0 ? AtvKey.dpadDown : AtvKey.dpadUp
-            for _ in 0..<vSteps {
-                atv.sendKey(vKey)
-                try? await Task.sleep(nanoseconds: 180_000_000) // 180ms — focus event bekle
+        if xOver && yOver {
+            // İkisi aşıldı — dominant olanı gönder, diğerini sıfırla
+            if abs(accumX) >= abs(accumY) {
+                sendDpad(accumX > 0 ? AtvKey.dpadRight : AtvKey.dpadLeft)
+                accumX = 0
+                accumY *= 0.5   // dikey birikimi azalt, sıfırlama
+            } else {
+                sendDpad(accumY > 0 ? AtvKey.dpadDown : AtvKey.dpadUp)
+                accumY = 0
+                accumX *= 0.5
             }
-
-            // Yatay — her 200px için 1 DPAD basışı (TV column genişliği tahmini)
-            let hSteps = abs(dx) / 200
-            let hKey   = dx > 0 ? AtvKey.dpadRight : AtvKey.dpadLeft
-            for _ in 0..<hSteps {
-                atv.sendKey(hKey)
-                try? await Task.sleep(nanoseconds: 180_000_000)
-            }
-
-            // Son olarak SELECT
-            atv.sendKey(AtvKey.dpadCenter)
+        } else if xOver {
+            sendDpad(accumX > 0 ? AtvKey.dpadRight : AtvKey.dpadLeft)
+            accumX = 0
+        } else if yOver {
+            sendDpad(accumY > 0 ? AtvKey.dpadDown : AtvKey.dpadUp)
+            accumY = 0
         }
     }
 
-    // MARK: - Actions
-
-    private func toggleAir() {
-        airOn.toggle()
-        engine.reset()
-        dpadAccumX = 0
-        dpadAccumY = 0
-        Task {
-            try? await Task.sleep(for: .milliseconds(300))
-            if airOn { apk.showCursor() } else { apk.hideCursor() }
-        }
-    }
-
-    private func sendKey(_ code: Int) {
-        if atv.isConnected { atv.sendKey(code) } else { apk.sendKey(code) }
+    private func sendDpad(_ key: Int) {
+        atv.sendKey(key)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        switch key {
+        case AtvKey.dpadRight: debugText = "→ SAĞ"
+        case AtvKey.dpadLeft:  debugText = "← SOL"
+        case AtvKey.dpadDown:  debugText = "↓ AŞAĞI"
+        case AtvKey.dpadUp:    debugText = "↑ YUKARI"
+        default: break
+        }
+    }
+
+    // MARK: - Yardımcı butonlar
+
+    private func actionButtons() -> some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 12) {
+                airBtn(icon: "arrow.backward", label: "Geri") { atv.sendKey(AtvKey.back) }
+                airBtn(icon: "house",          label: "Home") { atv.sendKey(AtvKey.home) }
+            }
+            HStack(spacing: 12) {
+                airBtn(icon: "speaker.plus",  label: "Ses+") { atv.sendKey(AtvKey.volumeUp) }
+                airBtn(icon: "speaker.minus", label: "Ses-") { atv.sendKey(AtvKey.volumeDown) }
+            }
+        }
+    }
+
+    private func keyboardButton() -> some View {
+        Button(action: { kbdVisible = true }) {
+            Label("Klavye", systemImage: "keyboard")
+                .foregroundColor(.greenOk)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.greenOk))
+        }
+    }
+
+    private func sensitivitySlider() -> some View {
+        VStack(spacing: 4) {
+            HStack {
+                Text("Hassasiyet")
+                    .font(.system(size: 16)).foregroundColor(.gray)
+                Spacer()
+                Text("\(Int(sensitivity))")
+                    .font(.system(size: 16, weight: .bold)).foregroundColor(.redAccent)
+            }
+            Slider(value: $sensitivity, in: 5...150).tint(.redAccent)
+        }
+        .padding(16)
+        .background(Color.terminalBg)
+        .cornerRadius(10)
+    }
+
+    private func airBtn(icon: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: icon).font(.system(size: 18))
+                Text(label).font(.system(size: 13))
+            }
+            .foregroundColor(.white)
+            .frame(maxWidth: .infinity)
+            .frame(height: 44)
+            .background(Color.blueDark)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.blueDeep))
+            .cornerRadius(14)
+        }
     }
 
     private func sendText() {
         guard !kbdText.isEmpty else { return }
-        apk.sendText(kbdText); kbdText = ""
+        kbdText = ""
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-    }
-
-    private func sendSwipe(_ dir: Int) {
-        guard !swipeCooldown else { return }
-        swipeCooldown = true
-        let cx = apk.cursorX, cy = apk.cursorY
-        let y2 = max(50, min(apk.screenH - 50, cy - 150 * dir))
-        apk.sendSwipe(x1: cx, y1: cy, x2: cx, y2: y2, duration: 100)
-        apk.setScrollMode(1)
-        Task { try? await Task.sleep(for: .milliseconds(200)); swipeCooldown = false }
     }
 }
