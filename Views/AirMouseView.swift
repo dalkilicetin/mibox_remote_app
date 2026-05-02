@@ -29,13 +29,13 @@ struct AirMouseView: View {
     private let motion = CMMotionManager()
 
     // Eşik açısı (derece) — bu kadar eğilince komut başlar
-    private let angleThreshold: Double = 12
+    private let angleThreshold: Double = 25
 
     // Hız kademeleri: (açı_eşiği, tekrar_ms)
     private let speedLevels: [(angle: Double, ms: UInt64)] = [
-        (12,  400),   // hafif eğim  → yavaş
-        (25,  250),   // orta eğim  → orta
-        (40,  120),   // dik eğim   → hızlı
+        ( 25,  400),   // hafif eğim  → yavaş
+        ( 40,  250),   // orta eğim  → orta
+        ( 55,  120),   // dik eğim   → hızlı
     ]
 
     var body: some View {
@@ -246,9 +246,9 @@ struct AirMouseView: View {
         // Dominant eksen
         let newKey: Int
         if absBeta >= absAlpha {
-            newKey = dBeta > 0 ? AtvKey.dpadDown : AtvKey.dpadUp
+            newKey = dBeta > 0 ? AtvKey.dpadUp : AtvKey.dpadDown
         } else {
-            newKey = dAlpha > 0 ? AtvKey.dpadRight : AtvKey.dpadLeft
+            newKey = dAlpha > 0 ? AtvKey.dpadLeft : AtvKey.dpadRight
         }
 
         if newKey != currentKey {
