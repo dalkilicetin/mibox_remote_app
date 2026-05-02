@@ -4,30 +4,39 @@ import CoreMotion
 struct AirMouseView: View {
     let atv: AtvRemoteService
 
-    @State private var debugText      = "Hazır"
-    @State private var sensitivity: Double = 25
-    @State private var kbdVisible     = false
-    @State private var kbdText        = ""
+    @State private var debugText     = "Hazır"
+    @State private var sensitivity: Double = 15   // eşik açısı (derece)
+    @State private var kbdVisible    = false
+    @State private var kbdText       = ""
 
-    // Gyro aktif mi (basılı tutuluyor mu)
-    @State private var gyroActive     = false
+    // Gyro aktif mi
+    @State private var gyroActive    = false
+
+    // Basma anındaki referans açılar
+    @State private var refBeta:  Double = 0
+    @State private var refAlpha: Double = 0
+
+    // Sürekli gönderme task'ı
+    @State private var repeatTask: Task<Void, Never>? = nil
 
     // Çift tık
     @State private var lastTapTime: Date = .distantPast
+    private let doubleTapInterval: TimeInterval = 0.35
 
-    // D-pad accumulator
-    @State private var accumX: Double = 0
-    @State private var accumY: Double = 0
-    private let dpadThreshold: Double = 80   // düşük = daha duyarlı
-
-    // Sensor timing
-    @State private var lastTime: Date = Date()
+    // Mevcut yön (repeat loop için)
+    @State private var currentKey: Int? = nil
 
     private let motion = CMMotionManager()
-    private let engine = InputEngine()
 
-    // Çift tık için max aralık
-    private let doubleTapInterval: TimeInterval = 0.35
+    // Eşik açısı (derece) — bu kadar eğilince komut başlar
+    private let angleThreshold: Double = 12
+
+    // Hız kademeleri: (açı_eşiği, tekrar_ms)
+    private let speedLevels: [(angle: Double, ms: UInt64)] = [
+        (12,  400),   // hafif eğim  → yavaş
+        (25,  250),   // orta eğim  → orta
+        (40,  120),   // dik eğim   → hızlı
+    ]
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -45,9 +54,6 @@ struct AirMouseView: View {
 
                     keyboardButton()
                         .frame(height: 52)
-
-                    sensitivitySlider()
-                        .frame(height: 68)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
@@ -110,9 +116,7 @@ struct AirMouseView: View {
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { _ in
-                    if !gyroActive {
-                        activateGyro()
-                    }
+                    if !gyroActive { activateGyro() }
                 }
                 .onEnded { _ in
                     deactivateGyro()
@@ -125,33 +129,67 @@ struct AirMouseView: View {
 
     private func activateGyro() {
         gyroActive = true
-        engine.reset()   // basma anı = yeni referans noktası
-        accumX = 0
-        accumY = 0
+        // Şu anki açıyı referans al
+        refBeta  = lastBeta
+        refAlpha = lastAlpha
+        currentKey = nil
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         debugText = "🎯 Gyro aktif"
+        startRepeatLoop()
     }
 
     private func deactivateGyro() {
         gyroActive = false
-        accumX = 0
-        accumY = 0
-        engine.reset()
+        currentKey = nil
+        repeatTask?.cancel()
+        repeatTask = nil
         debugText = "Hazır"
+    }
+
+    // MARK: - Repeat loop
+    // Gyro aktifken sürekli çalışır, currentKey'e göre komut gönderir
+
+    private func startRepeatLoop() {
+        repeatTask?.cancel()
+        repeatTask = Task {
+            while !Task.isCancelled {
+                guard gyroActive, let key = currentKey else {
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                    continue
+                }
+                atv.sendKey(key)
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+
+                // Hız: mevcut açıya göre interval belirle
+                let interval = repeatInterval()
+                try? await Task.sleep(nanoseconds: interval)
+            }
+        }
+    }
+
+    private func repeatInterval() -> UInt64 {
+        let dBeta  = lastBeta  - refBeta
+        let dAlpha = lastAlpha - refAlpha
+        let angle  = max(abs(dBeta), abs(dAlpha))
+
+        // En yüksek kademeden başa doğru bak
+        for level in speedLevels.reversed() {
+            if angle >= level.angle {
+                return level.ms * 1_000_000
+            }
+        }
+        return speedLevels[0].ms * 1_000_000
     }
 
     // MARK: - Çift tık
 
     private func handleTap() {
         let now = Date()
-        let elapsed = now.timeIntervalSince(lastTapTime)
-
-        if elapsed < doubleTapInterval {
-            // Çift tık → SELECT
+        if now.timeIntervalSince(lastTapTime) < doubleTapInterval {
             atv.sendKey(AtvKey.dpadCenter)
             UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
             debugText = "✅ Seçildi"
-            lastTapTime = .distantPast   // üçüncü tık yeni döngü başlatsın
+            lastTapTime = .distantPast
         } else {
             lastTapTime = now
         }
@@ -159,86 +197,69 @@ struct AirMouseView: View {
 
     // MARK: - Sensors
 
+    // Son okunan açılar (referans için)
+    @State private var lastBeta:  Double = 0
+    @State private var lastAlpha: Double = 0
+
     private func startSensors() {
         motion.stopDeviceMotionUpdates()
-        engine.reset()
-
         guard motion.isDeviceMotionAvailable else {
             debugText = "⚠️ Gyro yok"
             return
         }
-
         motion.deviceMotionUpdateInterval = 1.0 / 60
-        motion.startDeviceMotionUpdates(
-            using: .xMagneticNorthZVertical,
-            to: .main
-        ) { data, _ in
+        motion.startDeviceMotionUpdates(using: .xMagneticNorthZVertical, to: .main) { data, _ in
             guard let d = data else { return }
-            let beta  = d.attitude.pitch * 180 / .pi
-            let alpha = d.attitude.yaw   * 180 / .pi
-            onSensorUpdate(beta: beta, alpha: alpha)
+            lastBeta  = d.attitude.pitch * 180 / .pi
+            lastAlpha = d.attitude.yaw   * 180 / .pi
+            if gyroActive { updateDirection() }
         }
     }
 
     private func stopSensors() {
         motion.stopDeviceMotionUpdates()
+        repeatTask?.cancel()
     }
 
-    private func onSensorUpdate(beta: Double, alpha: Double) {
-        let now = Date()
-        let dt  = now.timeIntervalSince(lastTime)
-        guard dt >= 0.016 else { return }
-        lastTime = now
+    // MARK: - Yön güncelle
 
-        guard gyroActive else {
-            debugText = "pitch:\(String(format: "%.1f", beta)) yaw:\(String(format: "%.1f", alpha))"
-            engine.reset()
+    private func updateDirection() {
+        var dBeta  = lastBeta  - refBeta
+        var dAlpha = lastAlpha - refAlpha
+
+        // Wrap fix (yaw 180/-180 sınırı)
+        if dAlpha >  180 { dAlpha -= 360 }
+        if dAlpha < -180 { dAlpha += 360 }
+
+        let absBeta  = abs(dBeta)
+        let absAlpha = abs(dAlpha)
+
+        // Eşik altındaysa dur
+        guard absBeta >= angleThreshold || absAlpha >= angleThreshold else {
+            if currentKey != nil {
+                currentKey = nil
+                debugText = "🎯 Gyro aktif"
+            }
             return
         }
 
-        guard let (dx, dy) = engine.process(
-            beta: beta,
-            alpha: alpha,
-            dt: dt,
-            sensitivity: sensitivity
-        ) else { return }
-
-        accumX += Double(dx)
-        accumY += Double(dy)
-
-        // Dominant eksen — aynı anda ikisi aşıldıysa büyük olanı seç
-        let xOver = abs(accumX) >= dpadThreshold
-        let yOver = abs(accumY) >= dpadThreshold
-
-        if xOver && yOver {
-            // İkisi aşıldı — dominant olanı gönder, diğerini sıfırla
-            if abs(accumX) >= abs(accumY) {
-                sendDpad(accumX > 0 ? AtvKey.dpadRight : AtvKey.dpadLeft)
-                accumX = 0
-                accumY *= 0.5   // dikey birikimi azalt, sıfırlama
-            } else {
-                sendDpad(accumY > 0 ? AtvKey.dpadDown : AtvKey.dpadUp)
-                accumY = 0
-                accumX *= 0.5
-            }
-        } else if xOver {
-            sendDpad(accumX > 0 ? AtvKey.dpadRight : AtvKey.dpadLeft)
-            accumX = 0
-        } else if yOver {
-            sendDpad(accumY > 0 ? AtvKey.dpadDown : AtvKey.dpadUp)
-            accumY = 0
+        // Dominant eksen
+        let newKey: Int
+        if absBeta >= absAlpha {
+            newKey = dBeta > 0 ? AtvKey.dpadDown : AtvKey.dpadUp
+        } else {
+            newKey = dAlpha > 0 ? AtvKey.dpadRight : AtvKey.dpadLeft
         }
-    }
 
-    private func sendDpad(_ key: Int) {
-        atv.sendKey(key)
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        switch key {
-        case AtvKey.dpadRight: debugText = "→ SAĞ"
-        case AtvKey.dpadLeft:  debugText = "← SOL"
-        case AtvKey.dpadDown:  debugText = "↓ AŞAĞI"
-        case AtvKey.dpadUp:    debugText = "↑ YUKARI"
-        default: break
+        if newKey != currentKey {
+            currentKey = newKey
+            switch newKey {
+            case AtvKey.dpadRight: debugText = "→ SAĞ"
+            case AtvKey.dpadLeft:  debugText = "← SOL"
+            case AtvKey.dpadDown:  debugText = "↓ AŞAĞI"
+            case AtvKey.dpadUp:    debugText = "↑ YUKARI"
+            default: break
+            }
         }
     }
 
@@ -265,22 +286,6 @@ struct AirMouseView: View {
                 .padding(.vertical, 12)
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.greenOk))
         }
-    }
-
-    private func sensitivitySlider() -> some View {
-        VStack(spacing: 4) {
-            HStack {
-                Text("Hassasiyet")
-                    .font(.system(size: 16)).foregroundColor(.gray)
-                Spacer()
-                Text("\(Int(sensitivity))")
-                    .font(.system(size: 16, weight: .bold)).foregroundColor(.redAccent)
-            }
-            Slider(value: $sensitivity, in: 5...150).tint(.redAccent)
-        }
-        .padding(16)
-        .background(Color.terminalBg)
-        .cornerRadius(10)
     }
 
     private func airBtn(icon: String, label: String, action: @escaping () -> Void) -> some View {
