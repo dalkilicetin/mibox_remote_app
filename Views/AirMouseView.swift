@@ -31,19 +31,22 @@ struct AirMouseView: View {
     @State private var lastTapTime: Date = .distantPast
     private let doubleTapInterval: TimeInterval = 0.35
 
-    // --- Eşikler ---
-    private let deadZone:     Double = 15   // 0-15°   hiçbir şey
-    private let deltaMaxAngle: Double = 30  // 15-30°  delta modu
-    // 30°+  açı modu (repeat)
+    // --- Eşikler (pitch/yaw ayrı) ---
+    // Pitch (dikey):  dead=30°  delta=30-65°  açı=65°+
+    // Yaw   (yatay):  dead=60°  delta=60-130° açı=130°+
+    private let pitchDeadZone:  Double = 30
+    private let pitchDeltaMax:  Double = 65
+    private let yawDeadZone:    Double = 60
+    private let yawDeltaMax:    Double = 130
 
     // Delta modunda kaç derece harekette bir komut
     private let deltaStep: Double = 5
 
-    // Açı modunda hız kademeleri
+    // Açı modunda hız kademeleri (açı = dominant eksenin sapması)
     private let speedLevels: [(angle: Double, ms: UInt64)] = [
-        (30, 380),
-        (45, 220),
-        (60, 100),
+        (65,  380),   // pitch açı modu başlangıcı
+        (90,  220),
+        (115, 100),
     ]
 
     private let motion = CMMotionManager()
@@ -216,8 +219,14 @@ struct AirMouseView: View {
         let absAlpha = abs(dAlpha)
         let maxAngle = max(absBeta, absAlpha)
 
+        // Dominant eksen belirle
+        let isVertical = absBeta >= absAlpha
+        let axisAngle  = isVertical ? absBeta : absAlpha
+        let deadZone   = isVertical ? pitchDeadZone : yawDeadZone
+        let deltaMax   = isVertical ? pitchDeltaMax : yawDeltaMax
+
         // Dead zone
-        if maxAngle < deadZone {
+        if axisAngle < deadZone {
             if currentKey != nil {
                 currentKey = nil
                 debugText = "🎯 Gyro aktif"
@@ -225,23 +234,17 @@ struct AirMouseView: View {
             return
         }
 
-        // Dominant eksen
-        let dominantDelta = absBeta >= absAlpha ? dBeta : dAlpha
-        let isVertical    = absBeta >= absAlpha
-
         let key: Int
         if isVertical {
-            key = dBeta > 0 ? AtvKey.dpadUp : AtvKey.dpadDown
+            key = dBeta  > 0 ? AtvKey.dpadUp   : AtvKey.dpadDown
         } else {
-            key = dAlpha > 0 ? AtvKey.dpadLeft : AtvKey.dpadRight
+            key = dAlpha > 0 ? AtvKey.dpadLeft  : AtvKey.dpadRight
         }
 
-        if maxAngle < deltaMaxAngle {
+        if axisAngle < deltaMax {
             // --- DELTA MODU ---
-            // Repeat loop'u durdur
             currentKey = nil
 
-            // Delta ref'e göre ne kadar hareket etti
             var dFromDeltaRef = isVertical
                 ? lastBeta  - deltaRefBeta
                 : lastAlpha - deltaRefAlpha
@@ -254,7 +257,6 @@ struct AirMouseView: View {
             if abs(dFromDeltaRef) >= deltaStep {
                 atv.sendKey(key)
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                // Delta ref'i güncelle — bir sonraki adım buradan ölçülür
                 if isVertical { deltaRefBeta  = lastBeta }
                 else          { deltaRefAlpha = lastAlpha }
 
@@ -268,7 +270,6 @@ struct AirMouseView: View {
             }
         } else {
             // --- AÇI MODU ---
-            // Delta ref'i sürekli güncelle (moda geri dönünce sıfırdan başlasın)
             deltaRefBeta  = lastBeta
             deltaRefAlpha = lastAlpha
 
