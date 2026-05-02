@@ -4,39 +4,49 @@ import CoreMotion
 struct AirMouseView: View {
     let atv: AtvRemoteService
 
-    @State private var debugText     = "Hazır"
-    @State private var sensitivity: Double = 15   // eşik açısı (derece)
-    @State private var kbdVisible    = false
-    @State private var kbdText       = ""
+    @State private var debugText  = "Hazır"
+    @State private var kbdVisible = false
+    @State private var kbdText    = ""
 
     // Gyro aktif mi
-    @State private var gyroActive    = false
+    @State private var gyroActive = false
 
     // Basma anındaki referans açılar
     @State private var refBeta:  Double = 0
     @State private var refAlpha: Double = 0
 
-    // Sürekli gönderme task'ı
+    // Son okunan açılar
+    @State private var lastBeta:  Double = 0
+    @State private var lastAlpha: Double = 0
+
+    // Delta modu için son gönderilen açı
+    @State private var deltaRefBeta:  Double = 0
+    @State private var deltaRefAlpha: Double = 0
+
+    // Repeat loop (açı modu)
     @State private var repeatTask: Task<Void, Never>? = nil
+    @State private var currentKey: Int? = nil
 
     // Çift tık
     @State private var lastTapTime: Date = .distantPast
     private let doubleTapInterval: TimeInterval = 0.35
 
-    // Mevcut yön (repeat loop için)
-    @State private var currentKey: Int? = nil
+    // --- Eşikler ---
+    private let deadZone:     Double = 15   // 0-15°   hiçbir şey
+    private let deltaMaxAngle: Double = 30  // 15-30°  delta modu
+    // 30°+  açı modu (repeat)
+
+    // Delta modunda kaç derece harekette bir komut
+    private let deltaStep: Double = 5
+
+    // Açı modunda hız kademeleri
+    private let speedLevels: [(angle: Double, ms: UInt64)] = [
+        (30, 380),
+        (45, 220),
+        (60, 100),
+    ]
 
     private let motion = CMMotionManager()
-
-    // Eşik açısı (derece) — bu kadar eğilince komut başlar
-    private let angleThreshold: Double = 25
-
-    // Hız kademeleri: (açı_eşiği, tekrar_ms)
-    private let speedLevels: [(angle: Double, ms: UInt64)] = [
-        ( 25,  400),   // hafif eğim  → yavaş
-        ( 40,  250),   // orta eğim  → orta
-        ( 55,  120),   // dik eğim   → hızlı
-    ]
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -44,16 +54,10 @@ struct AirMouseView: View {
 
             VStack(spacing: 0) {
                 debugBar()
-
                 VStack(spacing: 12) {
-                    gyroPad()
-                        .frame(maxHeight: .infinity)
-
-                    actionButtons()
-                        .frame(height: 100)
-
-                    keyboardButton()
-                        .frame(height: 52)
+                    gyroPad().frame(maxHeight: .infinity)
+                    actionButtons().frame(height: 100)
+                    keyboardButton().frame(height: 52)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
@@ -94,19 +98,15 @@ struct AirMouseView: View {
             RoundedRectangle(cornerRadius: 28)
                 .fill(gyroActive ? Color.redAccent : Color.blueDark)
                 .animation(.easeInOut(duration: 0.15), value: gyroActive)
-
             RoundedRectangle(cornerRadius: 28)
                 .stroke(gyroActive ? Color.white.opacity(0.3) : Color.redAccent, lineWidth: 2)
-
             VStack(spacing: 8) {
                 Image(systemName: gyroActive ? "gyroscope" : "hand.tap")
                     .font(.system(size: 36))
                     .foregroundColor(.white)
-
                 Text(gyroActive ? "Yönlendiriyor..." : "Basılı Tut")
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundColor(.white)
-
                 Text("Çift tık → Seç")
                     .font(.system(size: 13))
                     .foregroundColor(.white.opacity(0.6))
@@ -115,13 +115,8 @@ struct AirMouseView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .gesture(
             DragGesture(minimumDistance: 0)
-                .onChanged { _ in
-                    if !gyroActive { activateGyro() }
-                }
-                .onEnded { _ in
-                    deactivateGyro()
-                    handleTap()
-                }
+                .onChanged { _ in if !gyroActive { activateGyro() } }
+                .onEnded   { _ in deactivateGyro(); handleTap() }
         )
     }
 
@@ -129,9 +124,10 @@ struct AirMouseView: View {
 
     private func activateGyro() {
         gyroActive = true
-        // Şu anki açıyı referans al
         refBeta  = lastBeta
         refAlpha = lastAlpha
+        deltaRefBeta  = lastBeta
+        deltaRefAlpha = lastAlpha
         currentKey = nil
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         debugText = "🎯 Gyro aktif"
@@ -146,37 +142,31 @@ struct AirMouseView: View {
         debugText = "Hazır"
     }
 
-    // MARK: - Repeat loop
-    // Gyro aktifken sürekli çalışır, currentKey'e göre komut gönderir
+    // MARK: - Repeat loop (açı modu)
 
     private func startRepeatLoop() {
         repeatTask?.cancel()
         repeatTask = Task {
             while !Task.isCancelled {
                 guard gyroActive, let key = currentKey else {
-                    try? await Task.sleep(nanoseconds: 50_000_000)
+                    try? await Task.sleep(nanoseconds: 30_000_000)
                     continue
                 }
                 atv.sendKey(key)
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
-
-                // Hız: mevcut açıya göre interval belirle
-                let interval = repeatInterval()
-                try? await Task.sleep(nanoseconds: interval)
+                try? await Task.sleep(nanoseconds: repeatInterval())
             }
         }
     }
 
     private func repeatInterval() -> UInt64 {
-        let dBeta  = lastBeta  - refBeta
-        let dAlpha = lastAlpha - refAlpha
-        let angle  = max(abs(dBeta), abs(dAlpha))
-
-        // En yüksek kademeden başa doğru bak
+        var dBeta  = lastBeta  - refBeta
+        var dAlpha = lastAlpha - refAlpha
+        if dAlpha >  180 { dAlpha -= 360 }
+        if dAlpha < -180 { dAlpha += 360 }
+        let angle = max(abs(dBeta), abs(dAlpha))
         for level in speedLevels.reversed() {
-            if angle >= level.angle {
-                return level.ms * 1_000_000
-            }
+            if angle >= level.angle { return level.ms * 1_000_000 }
         }
         return speedLevels[0].ms * 1_000_000
     }
@@ -197,16 +187,9 @@ struct AirMouseView: View {
 
     // MARK: - Sensors
 
-    // Son okunan açılar (referans için)
-    @State private var lastBeta:  Double = 0
-    @State private var lastAlpha: Double = 0
-
     private func startSensors() {
         motion.stopDeviceMotionUpdates()
-        guard motion.isDeviceMotionAvailable else {
-            debugText = "⚠️ Gyro yok"
-            return
-        }
+        guard motion.isDeviceMotionAvailable else { debugText = "⚠️ Gyro yok"; return }
         motion.deviceMotionUpdateInterval = 1.0 / 60
         motion.startDeviceMotionUpdates(using: .xMagneticNorthZVertical, to: .main) { data, _ in
             guard let d = data else { return }
@@ -221,21 +204,20 @@ struct AirMouseView: View {
         repeatTask?.cancel()
     }
 
-    // MARK: - Yön güncelle
+    // MARK: - Yön güncelle (iki mod)
 
     private func updateDirection() {
         var dBeta  = lastBeta  - refBeta
         var dAlpha = lastAlpha - refAlpha
-
-        // Wrap fix (yaw 180/-180 sınırı)
         if dAlpha >  180 { dAlpha -= 360 }
         if dAlpha < -180 { dAlpha += 360 }
 
         let absBeta  = abs(dBeta)
         let absAlpha = abs(dAlpha)
+        let maxAngle = max(absBeta, absAlpha)
 
-        // Eşik altındaysa dur
-        guard absBeta >= angleThreshold || absAlpha >= angleThreshold else {
+        // Dead zone
+        if maxAngle < deadZone {
             if currentKey != nil {
                 currentKey = nil
                 debugText = "🎯 Gyro aktif"
@@ -244,21 +226,61 @@ struct AirMouseView: View {
         }
 
         // Dominant eksen
-        let newKey: Int
-        if absBeta >= absAlpha {
-            newKey = dBeta > 0 ? AtvKey.dpadUp : AtvKey.dpadDown
+        let dominantDelta = absBeta >= absAlpha ? dBeta : dAlpha
+        let isVertical    = absBeta >= absAlpha
+
+        let key: Int
+        if isVertical {
+            key = dBeta > 0 ? AtvKey.dpadUp : AtvKey.dpadDown
         } else {
-            newKey = dAlpha > 0 ? AtvKey.dpadLeft : AtvKey.dpadRight
+            key = dAlpha > 0 ? AtvKey.dpadLeft : AtvKey.dpadRight
         }
 
-        if newKey != currentKey {
-            currentKey = newKey
-            switch newKey {
-            case AtvKey.dpadRight: debugText = "→ SAĞ"
-            case AtvKey.dpadLeft:  debugText = "← SOL"
-            case AtvKey.dpadDown:  debugText = "↓ AŞAĞI"
-            case AtvKey.dpadUp:    debugText = "↑ YUKARI"
-            default: break
+        if maxAngle < deltaMaxAngle {
+            // --- DELTA MODU ---
+            // Repeat loop'u durdur
+            currentKey = nil
+
+            // Delta ref'e göre ne kadar hareket etti
+            var dFromDeltaRef = isVertical
+                ? lastBeta  - deltaRefBeta
+                : lastAlpha - deltaRefAlpha
+
+            if !isVertical {
+                if dFromDeltaRef >  180 { dFromDeltaRef -= 360 }
+                if dFromDeltaRef < -180 { dFromDeltaRef += 360 }
+            }
+
+            if abs(dFromDeltaRef) >= deltaStep {
+                atv.sendKey(key)
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                // Delta ref'i güncelle — bir sonraki adım buradan ölçülür
+                if isVertical { deltaRefBeta  = lastBeta }
+                else          { deltaRefAlpha = lastAlpha }
+
+                switch key {
+                case AtvKey.dpadRight: debugText = "→ SAĞ (Δ)"
+                case AtvKey.dpadLeft:  debugText = "← SOL (Δ)"
+                case AtvKey.dpadDown:  debugText = "↓ AŞAĞI (Δ)"
+                case AtvKey.dpadUp:    debugText = "↑ YUKARI (Δ)"
+                default: break
+                }
+            }
+        } else {
+            // --- AÇI MODU ---
+            // Delta ref'i sürekli güncelle (moda geri dönünce sıfırdan başlasın)
+            deltaRefBeta  = lastBeta
+            deltaRefAlpha = lastAlpha
+
+            if key != currentKey {
+                currentKey = key
+                switch key {
+                case AtvKey.dpadRight: debugText = "→ SAĞ ●"
+                case AtvKey.dpadLeft:  debugText = "← SOL ●"
+                case AtvKey.dpadDown:  debugText = "↓ AŞAĞI ●"
+                case AtvKey.dpadUp:    debugText = "↑ YUKARI ●"
+                default: break
+                }
             }
         }
     }
