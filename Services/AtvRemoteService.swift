@@ -193,6 +193,7 @@ final class AtvRemoteService: ObservableObject {
 
     private func handleData(_ data: Data) {
         receivedAnyData = true        // Bug 5: fallback configure için
+        lastPingTime = Date()         // Her TV mesajı = bağlantı canlı
         recvBuf.append(data)
         log("📥 raw(\(data.count)b): \(data.prefix(8).map { String(format:"%02x",$0) }.joined(separator:" "))")
         while !recvBuf.isEmpty {
@@ -420,7 +421,7 @@ final class AtvRemoteService: ObservableObject {
                 try? await Task.sleep(for: .seconds(5))
                 guard isConnected else { break }
                 let elapsed = Date().timeIntervalSince(lastPingTime)
-                if elapsed > 20 {
+                if elapsed > 35 {
                     log("💀 Ping timeout (\(Int(elapsed))s) — ghost connection, disconnect")
                     onDisconnect()
                     break
