@@ -172,7 +172,7 @@ final class AtvRemoteService: ObservableObject {
     private func receive() {
         connection?.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, done, err in
             guard let self else { return }
-            if let data { Task { @MainActor in self.handleData(data) } }
+            if let data { Task { @MainActor in self.lastPingTime = Date(); self.handleData(data) } }
             if err == nil && !done { Task { @MainActor in self.receive() } }
             else {
                 if let err {
@@ -421,7 +421,7 @@ final class AtvRemoteService: ObservableObject {
                 try? await Task.sleep(for: .seconds(5))
                 guard isConnected else { break }
                 let elapsed = Date().timeIntervalSince(lastPingTime)
-                if elapsed > 35 {
+                if elapsed > 45 {
                     log("💀 Ping timeout (\(Int(elapsed))s) — ghost connection, disconnect")
                     onDisconnect()
                     break
