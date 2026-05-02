@@ -23,11 +23,10 @@ struct AirMouseView: View {
     @State private var lastTapTime: Date = .distantPast
     private let doubleTapInterval: TimeInterval = 0.35
 
-    // Eşik — bu kadar açı birikince bir D-pad komutu
-    // Küçük = akıcı/hızlı, Büyük = yavaş/hassas
-    private let pitchStep: Double = 8   // dikey: her 8° = 1 komut
-    private let yawStep:   Double = 12  // yatay: her 12° = 1 komut
-    private let deadZone:  Double = 4   // titremeleri filtrele
+    // Eşik değerleri — UI'dan ayarlanabilir
+    @State private var pitchStep: Double = 8    // dikey: her N° = 1 komut
+    @State private var yawStep:   Double = 12   // yatay: her N° = 1 komut
+    private let deadZone: Double = 4
 
     private let motion = CMMotionManager()
 
@@ -41,6 +40,7 @@ struct AirMouseView: View {
                     gyroPad().frame(maxHeight: .infinity)
                     actionButtons().frame(height: 100)
                     keyboardButton().frame(height: 52)
+                    stepSliders().frame(height: 110)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
@@ -240,7 +240,33 @@ struct AirMouseView: View {
         }
     }
 
+    private func stepSliders() -> some View {
+        VStack(spacing: 10) {
+            HStack {
+                Text("Dikey hassasiyet")
+                    .font(.system(size: 13)).foregroundColor(.gray)
+                Spacer()
+                Text(String(format: "%.0f°", pitchStep))
+                    .font(.system(size: 13, weight: .bold)).foregroundColor(.redAccent)
+            }
+            Slider(value: $pitchStep, in: 2...30, step: 1).tint(.redAccent)
+
+            HStack {
+                Text("Yatay hassasiyet")
+                    .font(.system(size: 13)).foregroundColor(.gray)
+                Spacer()
+                Text(String(format: "%.0f°", yawStep))
+                    .font(.system(size: 13, weight: .bold)).foregroundColor(.redAccent)
+            }
+            Slider(value: $yawStep, in: 2...30, step: 1).tint(.redAccent)
+        }
+        .padding(12)
+        .background(Color.terminalBg)
+        .cornerRadius(10)
+    }
+
     private func sendText() {
+
         guard !kbdText.isEmpty else { return }
         kbdText = ""
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
