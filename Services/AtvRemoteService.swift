@@ -39,6 +39,7 @@ final class AtvRemoteService: ObservableObject {
     private var port = 6466
     private var identity: SecIdentity?
     private var lastPingTime = Date()
+    private var lastPongTime  = Date()
     private var receivedAnyData = false
     private var certErrorFired = false
     private var sessionId = UUID()
@@ -68,12 +69,10 @@ final class AtvRemoteService: ObservableObject {
 
         log("🔌 Bağlanıyor → \(ip):\(port)")
 
-        // TCP seçenekleri — keepalive
+        // TCP keepalive KAPALI — Google TV keepalive'a cevap vermiyor,
+        // agresif ayarlar bağlantıyı öldürüyor. Healthcheck protocol ping ile yapılır.
         let tcpOpts = NWProtocolTCP.Options()
-        tcpOpts.enableKeepalive    = true
-        tcpOpts.keepaliveIdle      = 10   // 10s boşta → ilk keepalive
-        tcpOpts.keepaliveInterval  = 5    // 5s aralıkla tekrar
-        tcpOpts.keepaliveCount     = 3    // 3 başarısız → koptu (toplam ~25s)
+        tcpOpts.enableKeepalive = false
 
         let tlsOpts = makeTLS(identity: identity)
         let params  = NWParameters(tls: tlsOpts, tcp: tcpOpts)
@@ -173,20 +172,26 @@ final class AtvRemoteService: ObservableObject {
         connection?.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, done, err in
             guard let self else { return }
             if let data { Task { @MainActor in self.lastPingTime = Date(); self.handleData(data) } }
-            if err == nil && !done { Task { @MainActor in self.receive() } }
-            else {
-                if let err {
-                    Task { @MainActor in
-                        self.log("📡 Receive hata: \(err)")
-                        if self.isCertError(err.localizedDescription) {
-                            self.onCertError(err.localizedDescription)
-                        } else {
-                            self.onDisconnect()
-                        }
+            if let err {
+                // Gerçek TCP hatası — disconnect
+                Task { @MainActor in
+                    self.log("📡 Receive hata: \(err)")
+                    if self.isCertError(err.localizedDescription) {
+                        self.onCertError(err.localizedDescription)
+                    } else {
+                        self.onDisconnect()
                     }
-                } else {
-                    Task { @MainActor in self.onDisconnect() }
                 }
+            } else if done {
+                // Half-close — Android TV bazen bunu yapıyor ama bağlantı usable kalabilir
+                // Ping timeout zaten handle eder, burada agresif disconnect etme
+                Task { @MainActor in
+                    self.log("⚠️ Receive done — ping timeout bekleniyor")
+                    // Receive loop durdu ama disconnect etmiyoruz
+                    // 15s içinde pong gelmezse pingTimeoutTask disconnect eder
+                }
+            } else {
+                Task { @MainActor in self.receive() }
             }
         }
     }
@@ -243,10 +248,12 @@ final class AtvRemoteService: ObservableObject {
 
         case 0x42:
             lastPingTime = Date()
+            lastPongTime = Date()  // TV ping gönderdi = canlı
             sendPong(msg)
 
         case 0x4A:
-            log("🏓 remote_ping_response geldi")
+            lastPongTime = Date()
+            log("🏓 pong ← TV")
 
         case 0x52:
             log("🔑 remote_key_inject echo geldi")
@@ -373,34 +380,48 @@ final class AtvRemoteService: ObservableObject {
         }
     }
 
-    // MARK: - Ping / ghost input
+    // MARK: - Ping
 
     private func startPing() {
         pingTask?.cancel()
         pingTimeoutTask?.cancel()
         lastPingTime = Date()
+        lastPongTime = Date()
 
-        // Her 30s'de KEYCODE_WAKEUP — ghost connection önler
+        // Her 5s'de gerçek remote_ping_request gönder
         pingTask = Task {
-            var tick = 0
             while !Task.isCancelled && isConnected {
-                try? await Task.sleep(for: .seconds(30))
+                try? await Task.sleep(for: .seconds(5))
                 guard isConnected, !Task.isCancelled else { break }
-                tick += 1
-                log("👻 Ghost input #\(tick) → TV aktif tutuluyor")
-                sendKey(224)
+                sendPingRequest()
             }
         }
 
-        // Heartbeat log — sadece bilgi, disconnect yok
+        // Pong timeout — 15s içinde pong gelmezse koptu say
         pingTimeoutTask = Task {
             while !Task.isCancelled && isConnected {
-                try? await Task.sleep(for: .seconds(10))
+                try? await Task.sleep(for: .seconds(5))
                 guard isConnected else { break }
-                let elapsed = Date().timeIntervalSince(lastPingTime)
-                log("💓 Bağlantı canlı — son veri: \(Int(elapsed))s önce")
+                let elapsed = Date().timeIntervalSince(lastPongTime)
+                log("💓 Son pong: \(Int(elapsed))s önce")
+                if elapsed > 15 {
+                    log("💀 Pong timeout (\(Int(elapsed))s) — disconnect")
+                    onDisconnect()
+                    break
+                }
             }
         }
+    }
+
+    private func sendPingRequest() {
+        // remote_ping_request (field 8 → tag 0x42)
+        // RemotePingRequest.val1 = timestamp
+        let inner = ProtoWriter()
+        inner.writeVarint(field: 1, value: Int(Date().timeIntervalSince1970) & 0x7FFFFFFF)
+        let outer = ProtoWriter()
+        outer.writeBytes(field: 8, value: inner.toData())
+        sendMsg(outer.toData())
+        log("📡 ping →")
     }
 
     // MARK: - Disconnect / Reconnect (Exponential Backoff)
