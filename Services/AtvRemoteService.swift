@@ -113,8 +113,8 @@ final class AtvRemoteService: ObservableObject {
                         self?.isConnected = true
                         self?.reconnectAttempt = 0
                         self?.startReceive()
-                        self?.navEngine.start()   // engine bağlantı hazır olmadan önce başlasın
                         self?.scheduleFallbackConfigure()
+                        // navEngine.start() remote_start handler'da çağrılır
                         self?.log("✅ TCP+TLS bağlandı: \(ip):\(port)")
                         cont.resume(returning: true)
                     }
@@ -165,8 +165,12 @@ final class AtvRemoteService: ObservableObject {
     }
 
     // Gyro/continuous input için — AirMouseView'dan direkt çağrılır
+    // dx/dy normalize edilir: NavigationEngine -1...1 arası bekliyor
     func updateGyro(dx: Float, dy: Float) {
-        navEngine.update(dx: dx, dy: dy)
+        let scale: Float = 50.0
+        let nx = max(-1, min(1, dx / scale))
+        let ny = max(-1, min(1, dy / scale))
+        navEngine.update(dx: nx, dy: ny)
     }
 
     func disconnectPermanent() {
@@ -277,6 +281,7 @@ final class AtvRemoteService: ObservableObject {
             if tag == 0xC2 && msg.count >= 2 && msg[msg.startIndex + 1] == 0x02 {
                 log("🚀 remote_start ← TV — handshake tamamlandı!")
                 startPing()
+                navEngine.start()   // handshake tamam → input gönderebiliriz
             } else {
                 log("❓ Bilinmeyen tag: \(tagHex) — \(msg.prefix(8).map{String(format:"%02x",$0)}.joined(separator:" "))")
             }
@@ -407,7 +412,7 @@ final class AtvRemoteService: ObservableObject {
                 try? await Task.sleep(for: .seconds(30))
                 guard isConnected else { break }
                 let elapsed = Date().timeIntervalSince(lastPongTime)
-                log("💓 Son TV verisi: \(Int(elapsed))s önce | queue: \(inputQueue.count)")
+                log("💓 Son TV verisi: \(Int(elapsed))s önce")
             }
         }
     }

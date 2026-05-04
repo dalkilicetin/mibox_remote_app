@@ -57,7 +57,7 @@ final class NavigationEngine {
     func start() {
         guard !isRunning else { return }
         isRunning = true
-        scheduleNextTick()
+        startLoop()
     }
 
     func stop() {
@@ -104,37 +104,44 @@ final class NavigationEngine {
         discreteQueue.append((code: code, dir: dir))
     }
 
-    // MARK: - Tick loop (değişken interval)
+    // MARK: - Tick loop — single while loop, recursive scheduling yok
 
-    private func scheduleNextTick() {
-        guard isRunning else { return }
+    private func startLoop() {
         task?.cancel()
         task = Task { [weak self] in
-            guard let self else { return }
-            try? await Task.sleep(nanoseconds: UInt64(self.currentInterval * 1_000_000_000))
-            guard !Task.isCancelled else { return }
-            await self.tick()
-            self.scheduleNextTick()
+            while !Task.isCancelled {
+                guard let self else { break }
+                // Interval her tick'te hesaplanır — gecikme yok
+                let interval = self.currentInterval
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                guard !Task.isCancelled else { break }
+                await self.tick()
+            }
         }
     }
 
     @MainActor
     private func tick() {
-        // 1. Discrete queue — max 3/tick
+        // Priority: discrete (button) > continuous (gyro)
         lock.lock()
-        let batch = Array(discreteQueue.prefix(3))
-        discreteQueue.removeFirst(min(3, discreteQueue.count))
+        let batch = Array(discreteQueue.prefix(2))
+        discreteQueue.removeFirst(min(2, discreteQueue.count))
+        let hasDiscrete = !batch.isEmpty
         lock.unlock()
 
-        for item in batch {
-            onDirection?(item.code, item.dir)
+        if hasDiscrete {
+            // Discrete input varsa gyro'yu ignore et
+            for (i, item) in batch.enumerated() {
+                onDirection?(item.code, item.dir)
+            }
+            return
         }
 
-        // 2. Continuous direction
+        // Gyro/continuous direction
         guard let dir = currentDir else { return }
 
         if dir.keyCode != lastDir?.keyCode {
-            // Direction değişti → anında gönder (snappy hissi)
+            // Direction değişti → anında gönder (snappy)
             onDirection?(dir.keyCode, 3)
             lastDir = dir
         } else {
