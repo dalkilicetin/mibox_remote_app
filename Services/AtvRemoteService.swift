@@ -6,12 +6,12 @@ import Security
 //
 // RemoteMessage field → wire type 2 (length-delimited) tag bytes:
 //   field  1  remote_configure     → 0x0A
-//   field  2  remote_set_active    → 0x12   ← NOT: 0x1A remote_ERROR'dur!
+//   field  2  remote_set_active    → 0x12
 //   field  3  remote_error         → 0x1A
 //   field  8  remote_ping_request  → 0x42
 //   field  9  remote_ping_response → 0x4A
 //   field 10  remote_key_inject    → 0x52
-//   field 40  remote_start         → 0xC2, 0x02  (2-byte varint tag)
+//   field 40  remote_start         → 0xC2, 0x02
 //   field 50  remote_set_volume    → 0x92, 0x03
 //
 // Handshake sırası:
@@ -21,6 +21,60 @@ import Security
 //   Client → TV  : remote_set_active { active: 611 }
 //   TV  → Client : remote_start { started: true }
 //   [komutlar gönderilebilir]
+
+// MARK: - Input Queue (thread-safe)
+// UI → queue → rate controller → network
+// Buffer dolunca eski komutlar düşer — stale input istemiyoruz
+
+private final class InputQueue {
+    private var queue: [(code: Int, dir: Int)] = []
+    private let lock = NSLock()
+    private let maxSize: Int
+
+    init(maxSize: Int = 50) {
+        self.maxSize = maxSize
+    }
+
+    func push(code: Int, dir: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        // Coalescing YOK — duplicate drop etmiyoruz
+        // Rate controller frekansı kontrol eder, drop değil
+        if queue.count >= maxSize {
+            // Yarısını at — en eski komutlar stale, son komutları koru
+            queue.removeFirst(maxSize / 2)
+        }
+        queue.append((code: code, dir: dir))
+    }
+
+    func drain(max count: Int) -> [(code: Int, dir: Int)] {
+        lock.lock()
+        defer { lock.unlock() }
+        let slice = Array(queue.prefix(count))
+        queue.removeFirst(slice.count)
+        return slice
+    }
+
+    func flush() -> [(code: Int, dir: Int)] {
+        lock.lock()
+        defer { lock.unlock() }
+        let all = queue
+        queue.removeAll()
+        return all
+    }
+
+    var isEmpty: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return queue.isEmpty
+    }
+
+    var count: Int {
+        lock.lock(); defer { lock.unlock() }
+        return queue.count
+    }
+}
+
+// MARK: - AtvRemoteService
 
 @MainActor
 final class AtvRemoteService: ObservableObject {
@@ -39,26 +93,30 @@ final class AtvRemoteService: ObservableObject {
     private var port = 6466
     private var identity: SecIdentity?
     private var lastPingTime = Date()
-    private var lastPongTime  = Date()
+    private var lastPongTime = Date()
     private var receivedAnyData = false
     private var certErrorFired = false
     private var sessionId = UUID()
     private var isPairing = false
 
-    // Dedicated network queue — global() paylaşımlı ve yavaş
+    // Dedicated network queue
     private let nwQueue = DispatchQueue(label: "atv.nw", qos: .userInteractive)
 
     // Exponential backoff
     private var reconnectAttempt = 0
     private let maxBackoffSeconds: TimeInterval = 30
 
-    // Input buffer — bağlı değilken komutları sakla
-    private var pendingKeys: [(code: Int, dir: Int)] = []
-    private let maxPendingKeys = 10   // fazlasını at — çok eski komutlar anlamsız
+    // Input pipeline
+    private let inputQueue = InputQueue(maxSize: 20)
+    private var rateTask: Task<Void, Never>?
 
-    // Throttle — TV flood'u kaldırmıyor
-    private var lastSendTime = Date.distantPast
-    private let minSendInterval: TimeInterval = 0.016  // ~60fps
+    // Adaptive rate — buffer dolunca hızlan
+    private var maxPerTick: Int {
+        let c = inputQueue.count
+        if c > 15 { return 5 }
+        if c > 5  { return 3 }
+        return 1
+    }
 
     func setIdentity(_ id: SecIdentity) { identity = id }
 
@@ -80,11 +138,10 @@ final class AtvRemoteService: ObservableObject {
 
         log("🔌 Bağlanıyor → \(ip):\(port)")
 
-        // TCP keepalive KAPALI — Google TV keepalive'a cevap vermiyor,
-        // agresif ayarlar bağlantıyı öldürüyor. Healthcheck protocol ping ile yapılır.
+        // TCP keepalive KAPALI — Google TV cevap vermiyor, bağlantıyı öldürüyor
         let tcpOpts = NWProtocolTCP.Options()
         tcpOpts.enableKeepalive = false
-        tcpOpts.noDelay = true   // Nagle algoritmasını kapat — küçük paketler hemen gitsin
+        tcpOpts.noDelay = true  // Nagle kapat — küçük paketler hemen gitsin
 
         let tlsOpts = makeTLS(identity: identity)
         let params  = NWParameters(tls: tlsOpts, tcp: tcpOpts)
@@ -105,8 +162,9 @@ final class AtvRemoteService: ObservableObject {
                             conn.cancel(); return
                         }
                         self?.isConnected = true
-                        self?.reconnectAttempt = 0   // başarılı → backoff sıfırla
+                        self?.reconnectAttempt = 0
                         self?.startReceive()
+                        self?.startRateController()   // erken başlat — handshake öncesi de hazır olsun
                         self?.scheduleFallbackConfigure()
                         self?.log("✅ TCP+TLS bağlandı: \(ip):\(port)")
                         cont.resume(returning: true)
@@ -145,35 +203,50 @@ final class AtvRemoteService: ObservableObject {
         }
     }
 
+    // MARK: - Public sendKey
+    // UI buraya yazar — direkt network'e değil, input queue'ya
+
     func sendKey(_ code: Int, longPress: Bool = false) {
         if longPress {
-            if isConnected {
-                sendDir(code, 1)
-                Task { try? await Task.sleep(for: .milliseconds(120)); sendDir(code, 2) }
-            }
+            // Long press da queue'dan geçer — rate controller ile yarışmaz
+            inputQueue.push(code: code, dir: 1)
+            inputQueue.push(code: code, dir: 2)
             return
         }
-
-        guard isConnected else {
-            // Buffer — reconnect'te gönderilecek
-            if pendingKeys.count < maxPendingKeys {
-                pendingKeys.append((code: code, dir: 3))
-            }
-            return
-        }
-
-        // Throttle — 16ms'den hızlı gönderme
-        let now = Date()
-        guard now.timeIntervalSince(lastSendTime) >= minSendInterval else { return }
-        lastSendTime = now
-        sendDir(code, 3)
+        // Normal key → queue'ya ekle, rate controller gönderir
+        inputQueue.push(code: code, dir: 3)
     }
 
     func disconnectPermanent() {
         log("🛑 disconnectPermanent çağrıldı")
         reconnectAttempt = 0
+        rateTask?.cancel(); rateTask = nil
         reconnectTask?.cancel(); reconnectTask = nil
         cancelInternal()
+    }
+
+    // MARK: - Rate Controller (16ms tick — 60fps)
+    // Buffer → max N komut/tick → network
+    // Bağlı değilse bekler, bağlanınca devam eder
+
+    private func startRateController() {
+        rateTask?.cancel()
+        rateTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 16_000_000)  // 16ms
+
+                guard isConnected else { continue }  // bağlı değilse bekle — buffer korunur
+                guard !inputQueue.isEmpty else { continue }
+
+                let batch = inputQueue.drain(max: maxPerTick)
+                for item in batch {
+                    sendDir(item.code, item.dir)
+                    if batch.count > 1 {
+                        try? await Task.sleep(nanoseconds: 2_000_000)  // 2ms spacing — burst yumuşatma
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - TLS
@@ -196,7 +269,6 @@ final class AtvRemoteService: ObservableObject {
             guard let self else { return }
             if let data { Task { @MainActor in self.lastPingTime = Date(); self.handleData(data) } }
             if let err {
-                // Gerçek TCP hatası — disconnect
                 Task { @MainActor in
                     self.log("📡 Receive hata: \(err)")
                     if self.isCertError(err.localizedDescription) {
@@ -206,12 +278,9 @@ final class AtvRemoteService: ObservableObject {
                     }
                 }
             } else if done {
-                // Half-close — Android TV bazen bunu yapıyor ama bağlantı usable kalabilir
-                // Ping timeout zaten handle eder, burada agresif disconnect etme
                 Task { @MainActor in
-                    self.log("⚠️ Receive done — ping timeout bekleniyor")
-                    // Receive loop durdu ama disconnect etmiyoruz
-                    // 15s içinde pong gelmezse pingTimeoutTask disconnect eder
+                    self.log("⚠️ Receive done — bağlantı kapandı")
+                    self.onDisconnect()
                 }
             } else {
                 Task { @MainActor in self.receive() }
@@ -223,7 +292,6 @@ final class AtvRemoteService: ObservableObject {
         receivedAnyData = true
         lastPingTime = Date()
         recvBuf.append(data)
-        // raw log kaldırıldı — her veri paketinde spam yaratır
         while !recvBuf.isEmpty {
             guard let (len, n) = decodeVarint(recvBuf, at: 0) else { break }
             guard len > 0 && len < 10_000 else {
@@ -237,7 +305,6 @@ final class AtvRemoteService: ObservableObject {
             }
             let msg = recvBuf[n..<(n + len)]
             recvBuf.removeSubrange(..<(n + len))
-            // msg log kaldırıldı
             handleMsg(Data(msg))
         }
     }
@@ -245,19 +312,17 @@ final class AtvRemoteService: ObservableObject {
     // MARK: - Message dispatch
 
     private func handleMsg(_ msg: Data) {
-        guard !msg.isEmpty else { log("⚠️ Boş mesaj geldi"); return }
+        guard !msg.isEmpty else { return }
         let tag = msg[msg.startIndex]
         let tagHex = String(format: "0x%02X", tag)
 
         switch tag {
         case 0x0A:
-            guard !configured else { log("ℹ️ remote_configure tekrar geldi, ignore"); return }
+            guard !configured else { return }
             configured = true
             if let tvCode1 = parseField1Varint(msg) {
                 activeFeatures = 611 & tvCode1
                 log("📺 remote_configure ← TV code1=\(tvCode1), bizim activeFeatures=\(activeFeatures)")
-            } else {
-                log("📺 remote_configure ← TV (code1 parse edilemedi, default=611)")
             }
             sendConfigure()
 
@@ -271,23 +336,21 @@ final class AtvRemoteService: ObservableObject {
 
         case 0x42:
             lastPingTime = Date()
-            lastPongTime = Date()  // TV ping gönderdi = canlı
+            lastPongTime = Date()
             sendPong(msg)
 
         case 0x4A:
             lastPongTime = Date()
-            log("🏓 pong ← TV")
 
         case 0x52:
-            log("🔑 remote_key_inject echo geldi")
+            break  // echo, ignore
 
         default:
             if tag == 0xC2 && msg.count >= 2 && msg[msg.startIndex + 1] == 0x02 {
-                log("🚀 remote_start ← TV — handshake tamamlandı! Komutlar gönderilebilir.")
+                log("🚀 remote_start ← TV — handshake tamamlandı!")
                 startPing()
-                flushPendingKeys()
             } else {
-                log("❓ Bilinmeyen tag: \(tagHex) — tam msg: \(msg.prefix(8).map{String(format:"%02x",$0)}.joined(separator:" "))")
+                log("❓ Bilinmeyen tag: \(tagHex) — \(msg.prefix(8).map{String(format:"%02x",$0)}.joined(separator:" "))")
             }
         }
     }
@@ -355,24 +418,10 @@ final class AtvRemoteService: ObservableObject {
         let outer = ProtoWriter()
         outer.writeBytes(field: 10, value: inner.toData())
         sendMsg(outer.toData())
-        // log kaldırıldı — gyro modunda saniyede 10+ key gidiyor, spam yaratır
-    }
-
-    private func flushPendingKeys() {
-        guard !pendingKeys.isEmpty else { return }
-        log("📤 Pending keys flush: \(pendingKeys.count) komut")
-        let keys = pendingKeys
-        pendingKeys.removeAll()
-        for key in keys {
-            sendDir(key.code, key.dir)
-        }
     }
 
     private func sendMsg(_ payload: Data) {
-        guard let conn = connection, isConnected else {
-            log("⚠️ sendMsg: bağlı değil, mesaj gönderilemedi")
-            return
-        }
+        guard let conn = connection, isConnected else { return }
         let frame = encodeVarint(payload.count) + payload
         conn.send(content: frame, completion: .contentProcessed { [weak self] error in
             guard let self else { return }
@@ -414,7 +463,10 @@ final class AtvRemoteService: ObservableObject {
         }
     }
 
-    // MARK: - Ping
+    // MARK: - Ping (sadece TV→biz yönü)
+    // Biz ping GÖNDERMİYORUZ — TV remote_error döndürüp bağlantıyı kesiyor
+    // Android TV bazen dakikalarca sessiz kalır — bu normaldir
+    // Disconnect sadece TCP error'da olur
 
     private func startPing() {
         pingTask?.cancel()
@@ -422,14 +474,12 @@ final class AtvRemoteService: ObservableObject {
         lastPingTime = Date()
         lastPongTime = Date()
 
-        // Android TV bazen dakikalarca sessiz kalır — normaldir
-        // Disconnect sadece TCP write/receive hatasında tetiklenir, sessizlikte değil
         pingTimeoutTask = Task {
             while !Task.isCancelled && isConnected {
                 try? await Task.sleep(for: .seconds(30))
                 guard isConnected else { break }
                 let elapsed = Date().timeIntervalSince(lastPongTime)
-                log("💓 Son TV verisi: \(Int(elapsed))s önce")
+                log("💓 Son TV verisi: \(Int(elapsed))s önce | queue: \(inputQueue.count)")
             }
         }
     }
@@ -447,26 +497,23 @@ final class AtvRemoteService: ObservableObject {
         configured = false; isConnected = false
         pingTask?.cancel()
         pingTimeoutTask?.cancel()
+        // rateTask KAPATILMIYOR — buffer korunur, reconnect sonrası devam eder
 
-        // Exponential backoff: 0.5 → 1 → 2 → 4 → 8 → 16 → 30s (max)
         let delay = min(0.5 * pow(2.0, Double(reconnectAttempt)), maxBackoffSeconds)
         reconnectAttempt += 1
-        log("🔌 Bağlantı kesildi — \(String(format: "%.1f", delay))s sonra tekrar denenecek (deneme #\(reconnectAttempt))")
+        log("🔌 Bağlantı kesildi — \(String(format: "%.1f", delay))s sonra tekrar (deneme #\(reconnectAttempt))")
 
         reconnectTask?.cancel()
         reconnectTask = Task {
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled, !ip.isEmpty else { return }
-            log("🔄 Yeniden bağlanmayı deniyorum → \(ip):\(port)")
+            log("🔄 Yeniden bağlanıyorum → \(ip):\(port)")
             _ = await connect(ip: ip, port: port)
         }
     }
 
     private func onCertError(_ desc: String) {
-        guard !certErrorFired else {
-            log("ℹ️ Cert error zaten tetiklendi, yoksayılıyor")
-            return
-        }
+        guard !certErrorFired else { return }
         certErrorFired = true
         log("🔐 Cert hatası: \(desc)")
         reconnectAttempt = 0
@@ -486,7 +533,6 @@ final class AtvRemoteService: ObservableObject {
     }
 
     private func log(_ msg: String) {
-        // print kaldırıldı — log spam main thread'i tıkıyor
         onLog?(msg)
     }
 }
