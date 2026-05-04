@@ -393,40 +393,22 @@ final class AtvRemoteService: ObservableObject {
         lastPingTime = Date()
         lastPongTime = Date()
 
-        // Her 5s'de gerçek remote_ping_request gönder
-        pingTask = Task {
-            while !Task.isCancelled && isConnected {
-                try? await Task.sleep(for: .seconds(5))
-                guard isConnected, !Task.isCancelled else { break }
-                sendPingRequest()
-            }
-        }
-
-        // Pong timeout — 15s içinde pong gelmezse koptu say
+        // Biz ping GÖNDERMİYORUZ — TV remote_error döndürüp bağlantıyı kesiyor
+        // Protokol: sadece TV ping gönderir (0x42), biz pong cevap veririz (0x4A)
+        // Ghost connection tespiti: 60s TV'den veri gelmezse disconnect
         pingTimeoutTask = Task {
             while !Task.isCancelled && isConnected {
-                try? await Task.sleep(for: .seconds(5))
+                try? await Task.sleep(for: .seconds(10))
                 guard isConnected else { break }
                 let elapsed = Date().timeIntervalSince(lastPongTime)
-                log("💓 Son pong: \(Int(elapsed))s önce")
-                if elapsed > 15 {
-                    log("💀 Pong timeout (\(Int(elapsed))s) — disconnect")
+                log("💓 Son TV verisi: \(Int(elapsed))s önce")
+                if elapsed > 60 {
+                    log("💀 TV 60s sessiz — ghost connection, disconnect")
                     onDisconnect()
                     break
                 }
             }
         }
-    }
-
-    private func sendPingRequest() {
-        // remote_ping_request (field 8 → tag 0x42)
-        // RemotePingRequest.val1 = timestamp
-        let inner = ProtoWriter()
-        inner.writeVarint(field: 1, value: Int(Date().timeIntervalSince1970) & 0x7FFFFFFF)
-        let outer = ProtoWriter()
-        outer.writeBytes(field: 8, value: inner.toData())
-        sendMsg(outer.toData())
-        log("📡 ping →")
     }
 
     // MARK: - Disconnect / Reconnect (Exponential Backoff)
