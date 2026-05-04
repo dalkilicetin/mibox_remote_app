@@ -26,54 +26,6 @@ import Security
 // UI → queue → rate controller → network
 // Buffer dolunca eski komutlar düşer — stale input istemiyoruz
 
-private final class InputQueue {
-    private var queue: [(code: Int, dir: Int)] = []
-    private let lock = NSLock()
-    private let maxSize: Int
-
-    init(maxSize: Int = 50) {
-        self.maxSize = maxSize
-    }
-
-    func push(code: Int, dir: Int) {
-        lock.lock()
-        defer { lock.unlock() }
-        // Coalescing YOK — duplicate drop etmiyoruz
-        // Rate controller frekansı kontrol eder, drop değil
-        if queue.count >= maxSize {
-            // Yarısını at — en eski komutlar stale, son komutları koru
-            queue.removeFirst(maxSize / 2)
-        }
-        queue.append((code: code, dir: dir))
-    }
-
-    func drain(max count: Int) -> [(code: Int, dir: Int)] {
-        lock.lock()
-        defer { lock.unlock() }
-        let slice = Array(queue.prefix(count))
-        queue.removeFirst(slice.count)
-        return slice
-    }
-
-    func flush() -> [(code: Int, dir: Int)] {
-        lock.lock()
-        defer { lock.unlock() }
-        let all = queue
-        queue.removeAll()
-        return all
-    }
-
-    var isEmpty: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return queue.isEmpty
-    }
-
-    var count: Int {
-        lock.lock(); defer { lock.unlock() }
-        return queue.count
-    }
-}
-
 // MARK: - AtvRemoteService
 
 @MainActor
@@ -106,19 +58,16 @@ final class AtvRemoteService: ObservableObject {
     private var reconnectAttempt = 0
     private let maxBackoffSeconds: TimeInterval = 30
 
-    // Input pipeline
-    private let inputQueue = InputQueue(maxSize: 20)
-    private var rateTask: Task<Void, Never>?
+    // Input pipeline — NavigationEngine
+    private let navEngine = NavigationEngine()
 
-    // Adaptive rate — buffer dolunca hızlan
-    private var maxPerTick: Int {
-        let c = inputQueue.count
-        if c > 15 { return 5 }
-        if c > 5  { return 3 }
-        return 1
+    func setIdentity(_ id: SecIdentity) { identity = id; setupEngine() }
+
+    func setupEngine() {
+        navEngine.onDirection = { [weak self] code, dir in
+            self?.sendDir(code, dir)
+        }
     }
-
-    func setIdentity(_ id: SecIdentity) { identity = id }
 
     func setPairing(_ active: Bool) {
         isPairing = active
@@ -164,7 +113,7 @@ final class AtvRemoteService: ObservableObject {
                         self?.isConnected = true
                         self?.reconnectAttempt = 0
                         self?.startReceive()
-                        self?.startRateController()   // erken başlat — handshake öncesi de hazır olsun
+                        self?.navEngine.start()   // engine bağlantı hazır olmadan önce başlasın
                         self?.scheduleFallbackConfigure()
                         self?.log("✅ TCP+TLS bağlandı: \(ip):\(port)")
                         cont.resume(returning: true)
@@ -208,45 +157,24 @@ final class AtvRemoteService: ObservableObject {
 
     func sendKey(_ code: Int, longPress: Bool = false) {
         if longPress {
-            // Long press da queue'dan geçer — rate controller ile yarışmaz
-            inputQueue.push(code: code, dir: 1)
-            inputQueue.push(code: code, dir: 2)
+            navEngine.push(code: code, dir: 1)
+            navEngine.push(code: code, dir: 2)
             return
         }
-        // Normal key → queue'ya ekle, rate controller gönderir
-        inputQueue.push(code: code, dir: 3)
+        navEngine.push(code: code, dir: 3)
+    }
+
+    // Gyro/continuous input için — AirMouseView'dan direkt çağrılır
+    func updateGyro(dx: Float, dy: Float) {
+        navEngine.update(dx: dx, dy: dy)
     }
 
     func disconnectPermanent() {
         log("🛑 disconnectPermanent çağrıldı")
         reconnectAttempt = 0
-        rateTask?.cancel(); rateTask = nil
+        navEngine.stop()
         reconnectTask?.cancel(); reconnectTask = nil
         cancelInternal()
-    }
-
-    // MARK: - Rate Controller (16ms tick — 60fps)
-    // Buffer → max N komut/tick → network
-    // Bağlı değilse bekler, bağlanınca devam eder
-
-    private func startRateController() {
-        rateTask?.cancel()
-        rateTask = Task {
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 16_000_000)  // 16ms
-
-                guard isConnected else { continue }  // bağlı değilse bekle — buffer korunur
-                guard !inputQueue.isEmpty else { continue }
-
-                let batch = inputQueue.drain(max: maxPerTick)
-                for item in batch {
-                    sendDir(item.code, item.dir)
-                    if batch.count > 1 {
-                        try? await Task.sleep(nanoseconds: 2_000_000)  // 2ms spacing — burst yumuşatma
-                    }
-                }
-            }
-        }
     }
 
     // MARK: - TLS
@@ -497,7 +425,7 @@ final class AtvRemoteService: ObservableObject {
         configured = false; isConnected = false
         pingTask?.cancel()
         pingTimeoutTask?.cancel()
-        // rateTask KAPATILMIYOR — buffer korunur, reconnect sonrası devam eder
+        // navEngine DURDURULMUYOR — buffer korunur, reconnect sonrası devam eder
 
         let delay = min(0.5 * pow(2.0, Double(reconnectAttempt)), maxBackoffSeconds)
         reconnectAttempt += 1
