@@ -44,7 +44,7 @@ struct RemoteView: View {
         }
         .ignoresSafeArea(edges: .bottom)
         .task { await initAtv() }
-        .task { startApkContinuous() }
+        // .task { startApkContinuous() }  // APK devre dışı
         .onDisappear { apk.disconnect() }
     }
 

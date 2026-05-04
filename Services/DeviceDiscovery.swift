@@ -8,41 +8,172 @@ final class DeviceDiscovery: ObservableObject {
     @Published var isScanning = false
     @Published var status = ""
 
+    // mDNS browser'lar sürekli açık kalır — kopma anında hazır liste
     private var browser1: NWBrowser?
     private var browser2: NWBrowser?
-    private var scanTask: Task<Void, Never>?
+    private var browsersStarted = false
 
-    // Fix 4 — NWPathMonitor: network değişimini dinle
+    private var scanTask: Task<Void, Never>?
     private var pathMonitor: NWPathMonitor?
     private var monitorTask: Task<Void, Never>?
-    /// Network değişince dışarıya bildirim — SetupView scan'i sıfırlayabilir
+
     var onNetworkChange: (() -> Void)?
 
-    // Fix 5 — scan cleanup: aktif resolve connection'larını takip et
-    private var activeResolveConns: [NWConnection] = []
+    // mDNS ile bulunan IP'ler — sürekli güncellenir
+    private var mdnsIPs: Set<String> = []
 
     // MARK: - Public API
 
     func startScan() {
         guard !isScanning else { return }
         cancelScanInternals()
+        startBrowsersIfNeeded()
         scanTask = Task { await performScan(silent: false) }
     }
 
-    /// Arka planda sessizce çalışır — isScanning/status değişmez.
-    /// `onDeviceFound`: her yeni cihaz bulununca MainActor'da çağrılır.
-    /// Cache başarılıysa `stop()` ile iptal edilir.
     func startScanSilent(onDeviceFound: ((DiscoveredDevice) -> Void)? = nil) {
         cancelScanInternals()
+        startBrowsersIfNeeded()
         scanTask = Task { await performScan(silent: true, onDeviceFound: onDeviceFound) }
     }
 
     func stop() {
         cancelScanInternals()
         isScanning = false
+        // Browser'ları kapatma — sürekli dinlesin
     }
 
-    // Fix 4 — NWPathMonitor
+    // MARK: - mDNS Browser (sürekli çalışır)
+
+    func startBrowsersIfNeeded() {
+        guard !browsersStarted else { return }
+        browsersStarted = true
+
+        let params = NWParameters()
+        params.includePeerToPeer = false
+
+        let b1 = NWBrowser(for: .bonjour(type: "_androidtvremote._tcp",  domain: nil), using: params)
+        let b2 = NWBrowser(for: .bonjour(type: "_androidtvremote2._tcp", domain: nil), using: params)
+        browser1 = b1
+        browser2 = b2
+
+        let handle: (NWBrowser.Result) -> Void = { [weak self] result in
+            guard let self else { return }
+            if case let .service(name, type, domain, interface) = result.endpoint {
+                Task { @MainActor [self] in
+                    // DNS-only resolve — TCP bağlantısı kurma
+                    let ep = NWEndpoint.service(name: name, type: type,
+                                                domain: domain, interface: interface)
+                    if let ip = await self.resolveViaDNS(ep) {
+                        if self.mdnsIPs.insert(ip).inserted {
+                            self.status = "mDNS: \(ip) bulundu"
+                            let device = self.addOrUpdate(ip: ip, hasApk: false)
+                            _ = device
+                        }
+                    }
+                }
+            }
+        }
+
+        // Servis kaybolunca IP listesinden çıkar
+        let handleChanged: ([NWBrowser.Result], NWBrowser.Result.Change) -> Void = { [weak self] results, change in
+            results.forEach { handle($0) }
+            // Removed servisleri temizle
+            if case let .removed(result) = change {
+                if case let .service(name, _, _, _) = result.endpoint {
+                    Task { @MainActor [self] in
+                        self?.mdnsIPs = self?.mdnsIPs.filter { !$0.contains(name) } ?? []
+                    }
+                }
+            }
+        }
+
+        b1.browseResultsChangedHandler = { results, change in
+            results.forEach { handle($0) }
+        }
+        b2.browseResultsChangedHandler = { results, change in
+            results.forEach { handle($0) }
+        }
+
+        b1.stateUpdateHandler = { [weak self] state in
+            if case .failed(let err) = state {
+                Task { @MainActor in self?.status = "mDNS hata: \(err)" }
+            }
+        }
+
+        b1.start(queue: .global(qos: .userInitiated))
+        b2.start(queue: .global(qos: .userInitiated))
+    }
+
+    func stopBrowsers() {
+        browser1?.cancel(); browser2?.cancel()
+        browser1 = nil; browser2 = nil
+        browsersStarted = false
+    }
+
+    // MARK: - DNS-only resolve (TCP bağlantısı YOK)
+    // NWConnection ile sadece path/endpoint bilgisini al, gerçek bağlantı kurma
+
+    private func resolveViaDNS(_ endpoint: NWEndpoint) async -> String? {
+        await withCheckedContinuation { cont in
+            // Sadece DNS lookup için minimal TCP params
+            let params = NWParameters.tcp
+            params.prohibitedInterfaceTypes = []
+
+            let conn = NWConnection(to: endpoint, using: params)
+            var done = false
+
+            conn.stateUpdateHandler = { state in
+                switch state {
+                case .preparing:
+                    // preparing aşamasında path.remoteEndpoint dolu olabilir
+                    if let path = conn.currentPath,
+                       case let .hostPort(host, _) = path.remoteEndpoint {
+                        let raw = "\(host)".trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+                        if raw.contains(".") && !done {
+                            done = true
+                            conn.cancel()
+                            cont.resume(returning: raw)
+                            return
+                        }
+                    }
+                case .ready:
+                    if !done {
+                        done = true
+                        if let path = conn.currentPath,
+                           case let .hostPort(host, _) = path.remoteEndpoint {
+                            var ip = "\(host)".trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+                            if !ip.contains(".") { ip = "" }
+                            conn.cancel()
+                            cont.resume(returning: ip.isEmpty ? nil : ip)
+                        } else {
+                            conn.cancel()
+                            cont.resume(returning: nil)
+                        }
+                    }
+                case .failed, .cancelled:
+                    if !done {
+                        done = true
+                        cont.resume(returning: nil)
+                    }
+                default: break
+                }
+            }
+            conn.start(queue: .global(qos: .userInitiated))
+
+            // 3s timeout
+            Task {
+                try? await Task.sleep(for: .seconds(3))
+                guard !done else { return }
+                done = true
+                conn.cancel()
+                cont.resume(returning: nil)
+            }
+        }
+    }
+
+    // MARK: - NWPathMonitor
+
     func startMonitoringNetwork() {
         stopMonitoringNetwork()
         let monitor = NWPathMonitor()
@@ -55,9 +186,8 @@ final class DeviceDiscovery: ObservableObject {
             }
             for await path in stream {
                 guard !Task.isCancelled else { break }
-                if firstUpdate { firstUpdate = false; continue } // ilk event'i yoksay
+                if firstUpdate { firstUpdate = false; continue }
                 if path.status == .satisfied {
-                    // Ağ değişti ve bağlantı var — callback tetikle
                     await MainActor.run { self.onNetworkChange?() }
                 }
             }
@@ -74,24 +204,31 @@ final class DeviceDiscovery: ObservableObject {
     private func performScan(silent: Bool, onDeviceFound: ((DiscoveredDevice) -> Void)? = nil) async {
         if !silent { isScanning = true; status = "Taranıyor..." }
         devices = []
+        mdnsIPs = []
 
-        // UDP (APK keşfi) ve mDNS paralel başlatılır
-        async let udpTask  = MiBoxService.discoverAPK(timeout: 3.0)
-        async let mdnsTask = scanMDNS(onDeviceFound: onDeviceFound)
+        // UDP (APK keşfi) paralel
+        async let udpTask = MiBoxService.discoverAPK(timeout: 3.0)
 
-        let (apkIPs, mdnsFound) = await (Set(udpTask), mdnsTask)
+        // mDNS sonuçları için 4s bekle — browser zaten çalışıyor
+        try? await Task.sleep(for: .seconds(4))
+        let apkIPs = await Set(udpTask)
 
         guard !Task.isCancelled else { if !silent { isScanning = false }; return }
 
         for ip in apkIPs { addOrUpdate(ip: ip, hasApk: true) }
 
         // mDNS bulamadıysa TCP sweep
-        if !mdnsFound {
+        if mdnsIPs.isEmpty {
             if !silent { status = "mDNS bulunamadı — TCP taranıyor..." }
             await scanTCP(apkIPs: apkIPs, onDeviceFound: onDeviceFound)
+        } else {
+            // mDNS ile bulunanları ekle
+            for ip in mdnsIPs {
+                let device = addOrUpdate(ip: ip, hasApk: apkIPs.contains(ip))
+                onDeviceFound?(device)
+            }
         }
 
-        // APK bayraklarını son kez uygula
         for ip in apkIPs { addOrUpdate(ip: ip, hasApk: true) }
 
         if !silent {
@@ -99,53 +236,6 @@ final class DeviceDiscovery: ObservableObject {
             status = devices.isEmpty
                 ? "Cihaz bulunamadı. TV açık ve aynı Wi-Fi'da mı?"
                 : "\(devices.count) cihaz bulundu"
-        }
-    }
-
-    // MARK: - mDNS
-
-    private func scanMDNS(onDeviceFound: ((DiscoveredDevice) -> Void)?) async -> Bool {
-        await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-            var found = false
-            var resumed = false
-            func finish() {
-                guard !resumed else { return }
-                resumed = true
-                cont.resume(returning: found)
-            }
-
-            let params = NWParameters()
-            params.includePeerToPeer = false
-
-            let b1 = NWBrowser(for: .bonjour(type: "_androidtvremote._tcp",  domain: nil), using: params)
-            let b2 = NWBrowser(for: .bonjour(type: "_androidtvremote2._tcp", domain: nil), using: params)
-            browser1 = b1; browser2 = b2
-
-            let handle: (NWBrowser.Result) -> Void = { [weak self] result in
-                guard let self else { return }
-                if case let .service(name, type, domain, interface) = result.endpoint {
-                    Task { @MainActor [self] in
-                        let ep = NWEndpoint.service(name: name, type: type,
-                                                    domain: domain, interface: interface)
-                        if let ip = await self.resolveEndpointTracked(ep) {
-                            found = true
-                            self.status = "mDNS: \(ip) bulundu"
-                            let device = self.addOrUpdate(ip: ip, hasApk: false)
-                            onDeviceFound?(device)
-                        }
-                    }
-                }
-            }
-
-            b1.browseResultsChangedHandler = { results, _ in results.forEach { handle($0) } }
-            b2.browseResultsChangedHandler = { results, _ in results.forEach { handle($0) } }
-            b1.start(queue: .global(qos: .userInitiated))
-            b2.start(queue: .global(qos: .userInitiated))
-
-            Task {
-                try? await Task.sleep(for: .seconds(4))
-                b1.cancel(); b2.cancel(); finish()
-            }
         }
     }
 
@@ -186,61 +276,8 @@ final class DeviceDiscovery: ObservableObject {
 
     // MARK: - Helpers
 
-    // Fix 5: resolve sırasında açılan NWConnection'ları takip et,
-    // stop() çağrıldığında hepsini kapat — orphan connection önleme
-    private func resolveEndpointTracked(_ endpoint: NWEndpoint) async -> String? {
-        await withCheckedContinuation { cont in
-            let conn = NWConnection(to: endpoint, using: .tcp)
-            Task { @MainActor in self.activeResolveConns.append(conn) }
-            var done = false
-
-            conn.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    if !done {
-                        done = true
-                        if let path = conn.currentPath,
-                           case let .hostPort(host, _) = path.remoteEndpoint {
-                            var ip = "\(host)".trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-                            if !ip.contains(".") { ip = "" }
-                            conn.cancel()
-                            Task { @MainActor in self.activeResolveConns.removeAll { $0 === conn } }
-                            cont.resume(returning: ip.isEmpty ? nil : ip)
-                        } else {
-                            conn.cancel()
-                            Task { @MainActor in self.activeResolveConns.removeAll { $0 === conn } }
-                            cont.resume(returning: nil)
-                        }
-                    }
-                case .failed, .cancelled:
-                    if !done {
-                        done = true
-                        Task { @MainActor in self.activeResolveConns.removeAll { $0 === conn } }
-                        cont.resume(returning: nil)
-                    }
-                default: break
-                }
-            }
-            conn.start(queue: .global(qos: .userInitiated))
-            Task {
-                try? await Task.sleep(for: .seconds(3))
-                if !done {
-                    done = true
-                    conn.cancel()
-                    Task { @MainActor in self.activeResolveConns.removeAll { $0 === conn } }
-                    cont.resume(returning: nil)
-                }
-            }
-        }
-    }
-
-    // Fix 5: tüm internal kaynakları düzgün kapat
     private func cancelScanInternals() {
         scanTask?.cancel(); scanTask = nil
-        stopBrowsers()
-        // Orphan resolve connection'larını kapat
-        activeResolveConns.forEach { $0.cancel() }
-        activeResolveConns.removeAll()
     }
 
     @discardableResult
@@ -259,11 +296,6 @@ final class DeviceDiscovery: ObservableObject {
             devices.append(d)
             return d
         }
-    }
-
-    private func stopBrowsers() {
-        browser1?.cancel(); browser2?.cancel()
-        browser1 = nil;     browser2 = nil
     }
 }
 
@@ -324,4 +356,3 @@ func localSubnets() -> [String] {
     }
     return Array(subnets)
 }
-
