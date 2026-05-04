@@ -58,17 +58,21 @@ final class AtvRemoteService: ObservableObject {
     private var reconnectAttempt = 0
     private let maxBackoffSeconds: TimeInterval = 30
 
-    // Input pipeline — NavigationEngine
+    // Input pipeline — NavigationEngine + SendScheduler
     private let navEngine = NavigationEngine()
+    private let sender = SendScheduler()
 
     func setIdentity(_ id: SecIdentity) { identity = id; setupEngine() }
 
     func setupEngine() {
+        // SendScheduler setup — tek serial queue, 2ms spacing garantisi
+        sender.sendBlock = { [weak self] code, dir in
+            self?.sendDir(code, dir)
+        }
+        // NavigationEngine → sender → NWConnection
+        // Task @MainActor YOK — jitter kaynağıydı
         navEngine.onDirection = { [weak self] code, dir in
-            // Main thread dispatch burada — NavigationEngine bilmez
-            Task { @MainActor [weak self] in
-                self?.sendDir(code, dir)
-            }
+            self?.sender.enqueue(code: code, dir: dir)
         }
     }
 
@@ -464,5 +468,28 @@ final class AtvRemoteService: ObservableObject {
 
     private func log(_ msg: String) {
         onLog?(msg)
+    }
+}
+
+// MARK: - SendScheduler
+// Tüm send'ler tek serial queue'dan geçer — timing deterministik
+
+private final class SendScheduler {
+    private let queue = DispatchQueue(label: "atv.send.serial", qos: .userInteractive)
+    private var lastSendTime = DispatchTime.now()
+    private let minIntervalNs: UInt64 = 2_000_000  // 2ms minimum spacing
+
+    var sendBlock: ((Int, Int) -> Void)?
+
+    func enqueue(code: Int, dir: Int) {
+        queue.async {
+            let now = DispatchTime.now()
+            let elapsed = now.uptimeNanoseconds - self.lastSendTime.uptimeNanoseconds
+            if elapsed < self.minIntervalNs {
+                usleep(useconds_t((self.minIntervalNs - elapsed) / 1000))
+            }
+            self.sendBlock?(code, dir)
+            self.lastSendTime = DispatchTime.now()
+        }
     }
 }

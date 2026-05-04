@@ -143,8 +143,8 @@ final class NavigationEngine {
     private func tick() {
         // Discrete queue — max 2/tick, priority over gyro
         queueLock.lock()
-        let batch = Array(discreteQueue.prefix(2))
-        discreteQueue.removeFirst(min(2, discreteQueue.count))
+        let batch = Array(discreteQueue.prefix(1))  // burst azalt — SendScheduler spacing halleder
+        discreteQueue.removeFirst(min(1, discreteQueue.count))
         let hasDiscrete = !batch.isEmpty
         queueLock.unlock()
 
