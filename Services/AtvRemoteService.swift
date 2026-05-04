@@ -432,6 +432,7 @@ final class AtvRemoteService: ObservableObject {
         pingTask?.cancel()
         pingTimeoutTask?.cancel()
         navEngine.stop()  // reconnect'te remote_start'ta yeniden başlar
+        sender.reset()    // deadline birikimini temizle
 
         let delay = min(0.5 * pow(2.0, Double(reconnectAttempt)), maxBackoffSeconds)
         reconnectAttempt += 1
@@ -472,24 +473,34 @@ final class AtvRemoteService: ObservableObject {
 }
 
 // MARK: - SendScheduler
-// Tüm send'ler tek serial queue'dan geçer — timing deterministik
+// Tüm send'ler tek serial queue'dan geçer — deadline scheduling ile deterministic timing
+// usleep YOK — OS wake-up jitter'ı önlemek için asyncAfter + nextDeadline kullanılır
 
 private final class SendScheduler {
     private let queue = DispatchQueue(label: "atv.send.serial", qos: .userInteractive)
-    private var lastSendTime = DispatchTime.now()
-    private let minIntervalNs: UInt64 = 2_000_000  // 2ms minimum spacing
+    private var nextDeadline = DispatchTime.now()
+    private let intervalNs: UInt64 = 2_000_000  // 2ms guaranteed spacing
 
     var sendBlock: ((Int, Int) -> Void)?
 
     func enqueue(code: Int, dir: Int) {
         queue.async {
             let now = DispatchTime.now()
-            let elapsed = now.uptimeNanoseconds - self.lastSendTime.uptimeNanoseconds
-            if elapsed < self.minIntervalNs {
-                usleep(useconds_t((self.minIntervalNs - elapsed) / 1000))
+            // Eğer deadline geçmişse now'dan başla — stale deadline birikimini önle
+            if now.uptimeNanoseconds > self.nextDeadline.uptimeNanoseconds {
+                self.nextDeadline = now
             }
-            self.sendBlock?(code, dir)
-            self.lastSendTime = DispatchTime.now()
+            let deadline = self.nextDeadline
+            self.nextDeadline = deadline + .nanoseconds(Int(self.intervalNs))
+
+            // Deterministic scheduling — usleep değil
+            self.queue.asyncAfter(deadline: deadline) {
+                self.sendBlock?(code, dir)
+            }
         }
+    }
+
+    func reset() {
+        queue.async { self.nextDeadline = DispatchTime.now() }
     }
 }
