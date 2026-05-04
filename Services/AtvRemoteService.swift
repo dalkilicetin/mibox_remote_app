@@ -65,7 +65,10 @@ final class AtvRemoteService: ObservableObject {
 
     func setupEngine() {
         navEngine.onDirection = { [weak self] code, dir in
-            self?.sendDir(code, dir)
+            // Main thread dispatch burada — NavigationEngine bilmez
+            Task { @MainActor [weak self] in
+                self?.sendDir(code, dir)
+            }
         }
     }
 
@@ -430,7 +433,7 @@ final class AtvRemoteService: ObservableObject {
         configured = false; isConnected = false
         pingTask?.cancel()
         pingTimeoutTask?.cancel()
-        // navEngine DURDURULMUYOR — buffer korunur, reconnect sonrası devam eder
+        navEngine.stop()  // reconnect'te remote_start'ta yeniden başlar
 
         let delay = min(0.5 * pow(2.0, Double(reconnectAttempt)), maxBackoffSeconds)
         reconnectAttempt += 1
