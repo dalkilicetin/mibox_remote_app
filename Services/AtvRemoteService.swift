@@ -52,6 +52,14 @@ final class AtvRemoteService: ObservableObject {
     private var reconnectAttempt = 0
     private let maxBackoffSeconds: TimeInterval = 30
 
+    // Input buffer — bağlı değilken komutları sakla
+    private var pendingKeys: [(code: Int, dir: Int)] = []
+    private let maxPendingKeys = 10   // fazlasını at — çok eski komutlar anlamsız
+
+    // Throttle — TV flood'u kaldırmıyor
+    private var lastSendTime = Date.distantPast
+    private let minSendInterval: TimeInterval = 0.016  // ~60fps
+
     func setIdentity(_ id: SecIdentity) { identity = id }
 
     func setPairing(_ active: Bool) {
@@ -138,17 +146,27 @@ final class AtvRemoteService: ObservableObject {
     }
 
     func sendKey(_ code: Int, longPress: Bool = false) {
-        guard isConnected else {
-            log("⚠️ sendKey çağrıldı ama bağlı değil (code=\(code))")
+        if longPress {
+            if isConnected {
+                sendDir(code, 1)
+                Task { try? await Task.sleep(for: .milliseconds(120)); sendDir(code, 2) }
+            }
             return
         }
-        if longPress {
-            sendDir(code, 1)
-            // 200ms — TV long press için minimum süre, 600ms fazlaydı
-            Task { try? await Task.sleep(for: .milliseconds(200)); sendDir(code, 2) }
-        } else {
-            sendDir(code, 3)
+
+        guard isConnected else {
+            // Buffer — reconnect'te gönderilecek
+            if pendingKeys.count < maxPendingKeys {
+                pendingKeys.append((code: code, dir: 3))
+            }
+            return
         }
+
+        // Throttle — 16ms'den hızlı gönderme
+        let now = Date()
+        guard now.timeIntervalSince(lastSendTime) >= minSendInterval else { return }
+        lastSendTime = now
+        sendDir(code, 3)
     }
 
     func disconnectPermanent() {
@@ -267,6 +285,7 @@ final class AtvRemoteService: ObservableObject {
             if tag == 0xC2 && msg.count >= 2 && msg[msg.startIndex + 1] == 0x02 {
                 log("🚀 remote_start ← TV — handshake tamamlandı! Komutlar gönderilebilir.")
                 startPing()
+                flushPendingKeys()
             } else {
                 log("❓ Bilinmeyen tag: \(tagHex) — tam msg: \(msg.prefix(8).map{String(format:"%02x",$0)}.joined(separator:" "))")
             }
@@ -339,6 +358,16 @@ final class AtvRemoteService: ObservableObject {
         // log kaldırıldı — gyro modunda saniyede 10+ key gidiyor, spam yaratır
     }
 
+    private func flushPendingKeys() {
+        guard !pendingKeys.isEmpty else { return }
+        log("📤 Pending keys flush: \(pendingKeys.count) komut")
+        let keys = pendingKeys
+        pendingKeys.removeAll()
+        for key in keys {
+            sendDir(key.code, key.dir)
+        }
+    }
+
     private func sendMsg(_ payload: Data) {
         guard let conn = connection, isConnected else {
             log("⚠️ sendMsg: bağlı değil, mesaj gönderilemedi")
@@ -393,20 +422,14 @@ final class AtvRemoteService: ObservableObject {
         lastPingTime = Date()
         lastPongTime = Date()
 
-        // Biz ping GÖNDERMİYORUZ — TV remote_error döndürüp bağlantıyı kesiyor
-        // Protokol: sadece TV ping gönderir (0x42), biz pong cevap veririz (0x4A)
-        // Ghost connection tespiti: 60s TV'den veri gelmezse disconnect
+        // Android TV bazen dakikalarca sessiz kalır — normaldir
+        // Disconnect sadece TCP write/receive hatasında tetiklenir, sessizlikte değil
         pingTimeoutTask = Task {
             while !Task.isCancelled && isConnected {
-                try? await Task.sleep(for: .seconds(10))
+                try? await Task.sleep(for: .seconds(30))
                 guard isConnected else { break }
                 let elapsed = Date().timeIntervalSince(lastPongTime)
                 log("💓 Son TV verisi: \(Int(elapsed))s önce")
-                if elapsed > 60 {
-                    log("💀 TV 60s sessiz — ghost connection, disconnect")
-                    onDisconnect()
-                    break
-                }
             }
         }
     }
