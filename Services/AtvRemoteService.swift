@@ -410,14 +410,8 @@ final class AtvRemoteService: ObservableObject {
         lastPingTime = Date()
         lastPongTime = Date()
 
-        pingTimeoutTask = Task {
-            while !Task.isCancelled && isConnected {
-                try? await Task.sleep(for: .seconds(30))
-                guard isConnected else { break }
-                let elapsed = Date().timeIntervalSince(lastPongTime)
-                log("💓 Son TV verisi: \(Int(elapsed))s önce")
-            }
-        }
+        // pingTimeoutTask kaldırıldı — sadece log spam yapıyordu
+        // Disconnect sadece TCP error ile tetiklenir (receive/send hataları)
     }
 
     // MARK: - Disconnect / Reconnect (Exponential Backoff)

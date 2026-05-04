@@ -124,7 +124,7 @@ final class NavigationEngine {
 
         // Smoothstep acceleration — Apple benzeri easing
         let t = Double(min(velocity, 1.0))
-        let smooth = t * t * (3.0 - 2.0 * t)
+        let smooth = t * t * (2.5 - 1.5 * t)  // organic curve — başlangıç yumuşak, orta hızlı
         _currentInterval = max(baseInterval - (baseInterval - minInterval) * smooth, minInterval)
     }
 
@@ -156,24 +156,18 @@ final class NavigationEngine {
             return
         }
 
-        // Continuous direction
+        // Continuous direction — check + update aynı critical section (TOCTOU önleme)
         stateLock.lock()
-        let dir    = _currentDir
-        let lastDir = _lastDir
+        guard let dir = _currentDir else {
+            stateLock.unlock()
+            return
+        }
+        let isNewDir = dir.keyCode != _lastDir?.keyCode
+        if isNewDir { _lastDir = dir }
         stateLock.unlock()
 
-        guard let dir else { return }
-
-        if dir.keyCode != lastDir?.keyCode {
-            // Direction değişti → anında gönder (snappy)
-            stateLock.lock()
-            _lastDir = dir
-            stateLock.unlock()
-            onDirection?(dir.keyCode, 3)
-        } else {
-            // Aynı yön → velocity controlled repeat
-            onDirection?(dir.keyCode, 3)
-        }
+        // Direction değişti → snappy, aynı yön → velocity controlled repeat
+        onDirection?(dir.keyCode, 3)
     }
 }
 
