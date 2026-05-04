@@ -45,6 +45,9 @@ final class AtvRemoteService: ObservableObject {
     private var sessionId = UUID()
     private var isPairing = false
 
+    // Dedicated network queue — global() paylaşımlı ve yavaş
+    private let nwQueue = DispatchQueue(label: "atv.nw", qos: .userInteractive)
+
     // Exponential backoff
     private var reconnectAttempt = 0
     private let maxBackoffSeconds: TimeInterval = 30
@@ -73,6 +76,7 @@ final class AtvRemoteService: ObservableObject {
         // agresif ayarlar bağlantıyı öldürüyor. Healthcheck protocol ping ile yapılır.
         let tcpOpts = NWProtocolTCP.Options()
         tcpOpts.enableKeepalive = false
+        tcpOpts.noDelay = true   // Nagle algoritmasını kapat — küçük paketler hemen gitsin
 
         let tlsOpts = makeTLS(identity: identity)
         let params  = NWParameters(tls: tlsOpts, tcp: tcpOpts)
@@ -120,7 +124,7 @@ final class AtvRemoteService: ObservableObject {
                 default: break
                 }
             }
-            conn.start(queue: .global())
+            conn.start(queue: nwQueue)
             Task {
                 try? await Task.sleep(for: .seconds(8))
                 guard !done else { return }; done = true
@@ -140,7 +144,8 @@ final class AtvRemoteService: ObservableObject {
         }
         if longPress {
             sendDir(code, 1)
-            Task { try? await Task.sleep(for: .milliseconds(600)); sendDir(code, 2) }
+            // 200ms — TV long press için minimum süre, 600ms fazlaydı
+            Task { try? await Task.sleep(for: .milliseconds(200)); sendDir(code, 2) }
         } else {
             sendDir(code, 3)
         }
@@ -200,7 +205,7 @@ final class AtvRemoteService: ObservableObject {
         receivedAnyData = true
         lastPingTime = Date()
         recvBuf.append(data)
-        log("📥 raw(\(data.count)b): \(data.prefix(8).map { String(format:"%02x",$0) }.joined(separator:" "))")
+        // raw log kaldırıldı — her veri paketinde spam yaratır
         while !recvBuf.isEmpty {
             guard let (len, n) = decodeVarint(recvBuf, at: 0) else { break }
             guard len > 0 && len < 10_000 else {
@@ -214,7 +219,7 @@ final class AtvRemoteService: ObservableObject {
             }
             let msg = recvBuf[n..<(n + len)]
             recvBuf.removeSubrange(..<(n + len))
-            log("📨 msg(\(len)b): \(msg.prefix(12).map { String(format:"%02x",$0) }.joined(separator:" "))")
+            // msg log kaldırıldı
             handleMsg(Data(msg))
         }
     }
@@ -331,7 +336,7 @@ final class AtvRemoteService: ObservableObject {
         let outer = ProtoWriter()
         outer.writeBytes(field: 10, value: inner.toData())
         sendMsg(outer.toData())
-        log("🎮 sendKey → code=\(code) dir=\(dir==1 ? "DOWN" : dir==2 ? "UP" : "SHORT")")
+        // log kaldırıldı — gyro modunda saniyede 10+ key gidiyor, spam yaratır
     }
 
     private func sendMsg(_ payload: Data) {
@@ -476,6 +481,7 @@ final class AtvRemoteService: ObservableObject {
     }
 
     private func log(_ msg: String) {
-        print("[ATV] \(msg)"); onLog?(msg)
+        // print kaldırıldı — log spam main thread'i tıkıyor
+        onLog?(msg)
     }
 }
