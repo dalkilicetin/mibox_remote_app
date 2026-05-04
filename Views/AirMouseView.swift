@@ -29,6 +29,7 @@ struct AirMouseView: View {
     private let deadZone: Double = 4
 
     private let motion = CMMotionManager()
+    private let motionQueue = OperationQueue()  // main thread'den bağımsız
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -139,11 +140,18 @@ struct AirMouseView: View {
         motion.stopDeviceMotionUpdates()
         guard motion.isDeviceMotionAvailable else { debugText = "⚠️ Gyro yok"; return }
         motion.deviceMotionUpdateInterval = 1.0 / 60
-        motion.startDeviceMotionUpdates(using: .xMagneticNorthZVertical, to: .main) { data, _ in
+        motionQueue.maxConcurrentOperationCount = 1
+        motionQueue.qualityOfService = .userInteractive
+        motion.startDeviceMotionUpdates(using: .xMagneticNorthZVertical, to: motionQueue) { data, _ in
             guard let d = data else { return }
-            lastBeta  = d.attitude.pitch * 180 / .pi
-            lastAlpha = d.attitude.yaw   * 180 / .pi
-            if gyroActive { processMotion() }
+            let beta  = d.attitude.pitch * 180 / .pi
+            let alpha = d.attitude.yaw   * 180 / .pi
+            // Sadece state update ve komut gönderme MainActor'da
+            Task { @MainActor in
+                self.lastBeta  = beta
+                self.lastAlpha = alpha
+                if self.gyroActive { self.processMotion() }
+            }
         }
     }
 
@@ -173,30 +181,27 @@ struct AirMouseView: View {
             let key = dBeta > 0 ? AtvKey.dpadUp : AtvKey.dpadDown
             atv.sendKey(key)
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            // Referansı güncelle — bir adım ileri al
             refBeta = lastBeta
-            debugText = dBeta > 0 ? "↑ YUKARI" : "↓ AŞAĞI"
+            debugText = dBeta > 0 ? "↑ YUKARI  dB=\(String(format:"%.1f",absBeta))°" : "↓ AŞAĞI  dB=\(String(format:"%.1f",absBeta))°"
             sent = true
         }
 
         // Yatay — yawStep kadar birikince komut
         if absAlpha >= yawStep {
-            // Aynı anda dikey de aşıldıysa dominant olanı seç
             if !sent || absAlpha > absBeta {
                 let key = dAlpha > 0 ? AtvKey.dpadLeft : AtvKey.dpadRight
                 atv.sendKey(key)
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 refAlpha = lastAlpha
-                debugText = dAlpha > 0 ? "← SOL" : "→ SAĞ"
+                debugText = dAlpha > 0 ? "← SOL  dA=\(String(format:"%.1f",absAlpha))°" : "→ SAĞ  dA=\(String(format:"%.1f",absAlpha))°"
             } else {
-                // Dikey dominant — yatay referansı da güncelle (drift önle)
                 refAlpha = lastAlpha
             }
         }
 
-        // Her iki eksen de dead zone'daysa debug güncelle
-        if absBeta < deadZone && absAlpha < deadZone && !sent {
-            debugText = "🎯 Hazır"
+        // Dead zone'daysa sıfırla
+        if absBeta < deadZone && absAlpha < deadZone {
+            debugText = "🎯 pitch=\(String(format:"%.1f",dBeta))° yaw=\(String(format:"%.1f",dAlpha))°"
         }
     }
 
