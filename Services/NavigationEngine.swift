@@ -42,6 +42,7 @@ final class NavigationEngine {
     private var _currentInterval: Double = 0.016
     private var _lastDir: Direction? = nil
     private var _lastAxisIsX = true
+    private var _currentVelocity: Float = 0
 
     // MARK: - Discrete queue
 
@@ -83,6 +84,7 @@ final class NavigationEngine {
         _currentInterval = baseInterval
         _lastDir = nil
         _lastAxisIsX = true
+        _currentVelocity = 0
         stateLock.unlock()
 
         // Discrete queue temizle
@@ -99,7 +101,8 @@ final class NavigationEngine {
         if abs(dx) < deadZone && abs(dy) < deadZone {
             _currentDir = nil
             _currentInterval = baseInterval
-            _lastDir = nil   // dead zone'da reset — sonraki swipe'ta ilk event kaybolmasın
+            _lastDir = nil
+            _currentVelocity *= 0.85  // yumuşak durma — instant stop değil
             return
         }
 
@@ -120,11 +123,17 @@ final class NavigationEngine {
             velocity = abs(dy)
         }
 
+        // Direction değişince velocity sıfırla — "zıplama" önle
+        if dir.keyCode != _currentDir?.keyCode {
+            _currentVelocity = 0
+        }
+
         _currentDir = dir
+        _currentVelocity = min(velocity, 1.0)
 
         // Smoothstep acceleration — Apple benzeri easing
-        let t = Double(min(velocity, 1.0))
-        let smooth = t * t * (2.5 - 1.5 * t)  // organic curve — başlangıç yumuşak, orta hızlı
+        let t = Double(_currentVelocity)
+        let smooth = t * t * (2.5 - 1.5 * t)
         _currentInterval = max(baseInterval - (baseInterval - minInterval) * smooth, minInterval)
     }
 
@@ -136,6 +145,20 @@ final class NavigationEngine {
             discreteQueue.removeFirst(10)
         }
         discreteQueue.append((code: code, dir: dir))
+    }
+
+    // MARK: - Velocity → Step Count
+    // Hızlı swipe = daha fazla step (daha fazla hareket)
+    // SendScheduler her step'i 2ms arayla gönderiyor
+
+    private func velocityToSteps(_ velocity: Float) -> Int {
+        switch velocity {
+        case ..<0.2: return 1
+        case ..<0.4: return 2
+        case ..<0.6: return 3
+        case ..<0.8: return 4
+        default:     return 5
+        }
     }
 
     // MARK: - Tick (background thread)
@@ -164,10 +187,15 @@ final class NavigationEngine {
         }
         let isNewDir = dir.keyCode != _lastDir?.keyCode
         if isNewDir { _lastDir = dir }
+        let velocity = _currentVelocity
         stateLock.unlock()
 
-        // Direction değişti → snappy, aynı yön → velocity controlled repeat
-        onDirection?(dir.keyCode, 3)
+        // Velocity → step count
+        // Direction change → her zaman 1 step (zıplama önle)
+        let steps = isNewDir ? 1 : velocityToSteps(velocity)
+        for _ in 0..<steps {
+            onDirection?(dir.keyCode, 3)
+        }
     }
 }
 
