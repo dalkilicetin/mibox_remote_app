@@ -43,6 +43,7 @@ final class NavigationEngine {
     private var _lastDir: Direction? = nil
     private var _lastAxisIsX = true
     private var _currentVelocity: Float = 0
+    private var _lastUpdateTime = Date()
 
     // MARK: - Discrete queue
 
@@ -85,6 +86,7 @@ final class NavigationEngine {
         _lastDir = nil
         _lastAxisIsX = true
         _currentVelocity = 0
+        _lastUpdateTime = Date()
         stateLock.unlock()
 
         // Discrete queue temizle
@@ -123,13 +125,20 @@ final class NavigationEngine {
             velocity = abs(dy)
         }
 
+        // Gerçek velocity = mesafe / zaman
+        let now = Date()
+        let dt = now.timeIntervalSince(_lastUpdateTime)
+        _lastUpdateTime = now
+        let raw = _lastAxisIsX ? abs(dx) : abs(dy)
+        let realVelocity = dt > 0 ? raw / Float(dt) : raw
+
         // Direction değişince velocity sıfırla — "zıplama" önle
         if dir.keyCode != _currentDir?.keyCode {
             _currentVelocity = 0
         }
 
         _currentDir = dir
-        _currentVelocity = min(velocity, 1.0)
+        _currentVelocity = min(realVelocity * 0.1, 1.0)  // normalize
 
         // Smoothstep acceleration — Apple benzeri easing
         let t = Double(_currentVelocity)
@@ -152,13 +161,8 @@ final class NavigationEngine {
     // SendScheduler her step'i 2ms arayla gönderiyor
 
     private func velocityToSteps(_ velocity: Float) -> Int {
-        switch velocity {
-        case ..<0.2: return 1
-        case ..<0.4: return 2
-        case ..<0.6: return 3
-        case ..<0.8: return 4
-        default:     return 5
-        }
+        // Lineer + smooth — step change ani değil
+        return min(1 + Int(velocity * 4), 5)
     }
 
     // MARK: - Tick (background thread)
